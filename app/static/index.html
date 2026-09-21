@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="SendStack email campaign testing and production-readiness workspace" />
+    <title>SendStack</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div id="login-screen" class="login-screen" hidden>
+      <div class="login-visual" aria-hidden="true">
+        <div class="signal signal-a"></div>
+        <div class="signal signal-b"></div>
+        <div class="signal signal-c"></div>
+        <div class="mail-route">
+          <span class="route-node">S</span>
+          <span class="route-line"></span>
+          <span class="route-node route-node-small"></span>
+          <span class="route-line route-line-short"></span>
+          <span class="route-node route-node-small"></span>
+        </div>
+      </div>
+      <main class="login-panel">
+        <div class="login-card">
+          <div class="brand brand-login"><span class="brand-mark">S</span><span>SendStack</span></div>
+          <p class="eyebrow">TEST ENVIRONMENT</p>
+          <h1>Campaign operations,<br />without the guesswork.</h1>
+          <p class="login-copy">Sign in to test contacts, campaigns, sandbox delivery, suppressions, and reporting.</p>
+          <form id="login-form" class="stack" autocomplete="on">
+            <label>Email address<input id="login-email" name="email" type="email" autocomplete="username" value="admin@sendstack.local" required /></label>
+            <label>Password<input id="login-password" name="password" type="password" autocomplete="current-password" value="ChangeMe123!" required /></label>
+            <p id="login-error" class="form-error" role="alert"></p>
+            <button class="button primary full" type="submit">Sign in</button>
+          </form>
+          <p class="login-hint">The default credentials are for local testing only.</p>
+        </div>
+      </main>
+    </div>
+
+    <div id="app-shell" class="app-shell" hidden>
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">S</span><span>SendStack</span></div>
+        <div id="mode-pill" class="mode-pill"><span></span> Sandbox</div>
+        <nav id="main-nav" aria-label="Primary navigation">
+          <button data-view="dashboard" class="nav-item active"><span class="nav-icon">⌂</span>Overview</button>
+          <button data-view="contacts" data-permission="contacts.view" class="nav-item"><span class="nav-icon">◎</span>Contacts</button>
+          <button data-view="campaigns" data-permission="campaigns.view" class="nav-item"><span class="nav-icon">✦</span>Campaigns</button>
+          <button data-view="sending" data-permission="sending.view" class="nav-item"><span class="nav-icon">◇</span>Sending setup</button>
+          <button data-view="deliveries" data-permission="deliveries.view" class="nav-item"><span class="nav-icon">↗</span>Deliveries</button>
+          <button data-view="suppressions" data-permission="suppressions.view" class="nav-item"><span class="nav-icon">⊘</span>Suppressions</button>
+          <button data-view="users" data-permission="users.view" class="nav-item"><span class="nav-icon">◉</span>Users &amp; roles</button>
+          <button data-view="audit" data-permission="audit.view" class="nav-item"><span class="nav-icon">≡</span>Audit log</button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="user-chip">
+            <span id="user-initials" class="avatar">TA</span>
+            <div><strong id="user-name">Test Administrator</strong><span id="user-role">Administrator</span></div>
+          </div>
+          <button id="logout-button" class="text-button">Sign out</button>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button id="mobile-nav-button" class="icon-button mobile-only" aria-label="Open navigation">☰</button>
+          <div>
+            <p id="page-kicker" class="eyebrow">OPERATIONS</p>
+            <h1 id="page-title">Overview</h1>
+          </div>
+          <div class="topbar-actions">
+            <div id="queue-status" class="queue-status"><span></span><strong>Queue clear</strong></div>
+            <button id="global-new-campaign" data-permission="campaigns.manage" class="button primary">New campaign</button>
+          </div>
+        </header>
+        <main id="content" class="content" tabindex="-1">
+          <div class="loading-grid" aria-label="Loading"><div></div><div></div><div></div></div>
+        </main>
+      </div>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    <dialog id="modal" class="modal">
+      <div class="modal-frame">
+        <div class="modal-head"><div><p id="modal-kicker" class="eyebrow"></p><h2 id="modal-title"></h2></div><button id="modal-close" class="icon-button" aria-label="Close dialog">×</button></div>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </dialog>
+  </body>
+</html>
