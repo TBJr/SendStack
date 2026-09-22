@@ -501,15 +501,17 @@ export async function handleApi(request: Request, path: string[]) {
             fromEmail: campaign.from_email,
           })
         : null;
-      await query(
-        `INSERT INTO campaign_recipients (id, campaign_id, contact_id, email, status, message_id, provider_email_id, queued_at, sent_at)
-         VALUES ($1, $2, $3, $4, 'sent', $5, $6, NOW(), NOW()) ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
-        [recipientId, campaign.id, contact.id, contact.email, messageId, providerEmail?.id ?? null],
-      );
+      if (contact.id) {
+        await query(
+          `INSERT INTO campaign_recipients (id, campaign_id, contact_id, email, status, message_id, provider_email_id, queued_at, sent_at)
+           VALUES ($1, $2, $3, $4, 'sent', $5, $6, NOW(), NOW()) ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+          [recipientId, campaign.id, contact.id, contact.email, messageId, providerEmail?.id ?? null],
+        );
+      }
       await query(
         `INSERT INTO messages (id, campaign_id, recipient_id, contact_id, to_email, subject, from_email, html_body, text_body, status, unsubscribe_token, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'captured', $10, NOW())`,
-        [messageId, campaign.id, recipientId, contact.id, contact.email, subject, campaign.from_email, htmlBody, textBody, unsubscribeToken],
+        [messageId, campaign.id, contact.id ? recipientId : null, contact.id, contact.email, subject, campaign.from_email, htmlBody, textBody, unsubscribeToken],
       );
       if (providerEmail) {
         await query(`UPDATE messages SET status = 'submitted', provider_id = $1 WHERE id = $2`, [providerEmail.id, messageId]);
