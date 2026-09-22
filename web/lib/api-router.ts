@@ -38,7 +38,7 @@ const PERMISSION_DEFINITIONS = [
 ].map(([id, label, description]) => ({ id, label, description }));
 
 function permissionsForRole(role: string): string[] {
-  return ROLE_DEFINITIONS.find((definition) => definition.id === role)?.permissions ?? [];
+  return role === "admin" ? ADMIN_PERMISSIONS : [];
 }
 
 function tokenHash(token: string): string {
@@ -257,17 +257,17 @@ export async function handleApi(request: Request, path: string[]) {
     return session ? json(200, sessionPayload(session)) : json(401, { error: "Not signed in." });
   }
   if (request.method === "GET" && route === "/summary") {
-    const auth = await requirePermission(request, "overview.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     return summaryResponse();
   }
   if (request.method === "GET" && route === "/production-readiness") {
-    const auth = await requirePermission(request, "sending.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     return readinessResponse();
   }
   if (request.method === "GET" && route === "/lists") {
-    const auth = await requirePermission(request, "lists.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const lists = await query(
       `SELECT l.id, l.name, l.description, l.created_at, COUNT(lc.contact_id)::int AS contact_count
@@ -277,7 +277,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { lists: lists.rows });
   }
   if (request.method === "POST" && route === "/lists") {
-    const auth = await requirePermission(request, "lists.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     const body = await request.json().catch(() => ({})) as { name?: string; description?: string };
@@ -291,8 +291,33 @@ export async function handleApi(request: Request, path: string[]) {
     await recordRequestAudit(request, auth.session.user_id, "list_created", "list", id, { name });
     return json(201, { list: { id, name, description, contact_count: 0 } });
   }
+  const listMatch = route.match(/^\/lists\/([^/]+)$/);
+  if (request.method === "PATCH" && listMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const body = await request.json().catch(() => ({})) as { name?: string; description?: string };
+    const name = (body.name ?? "").trim();
+    if (!name) return json(400, { error: "List name is required." });
+    const updated = await query(
+      `UPDATE lists SET name = $1, description = $2 WHERE id = $3 RETURNING id, name, description, created_at`,
+      [name, (body.description ?? "").trim(), listMatch[1]],
+    );
+    if (!updated.rows[0]) return json(404, { error: "List not found." });
+    await recordRequestAudit(request, auth.session.user_id, "list_updated", "list", listMatch[1], { name });
+    return json(200, { list: updated.rows[0] });
+  }
+  if (request.method === "DELETE" && listMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const deleted = await query(`DELETE FROM lists WHERE id = $1 RETURNING id`, [listMatch[1]]);
+    if (!deleted.rows[0]) return json(404, { error: "List not found." });
+    await recordRequestAudit(request, auth.session.user_id, "list_deleted", "list", listMatch[1]);
+    return json(200, { ok: true });
+  }
   if (request.method === "GET" && route === "/users") {
-    const auth = await requirePermission(request, "users.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const users = await query<{
       id: string; email: string; name: string; role: string; active: boolean;
@@ -305,7 +330,7 @@ export async function handleApi(request: Request, path: string[]) {
     });
   }
   if (request.method === "GET" && route === "/suppressions") {
-    const auth = await requirePermission(request, "suppressions.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const suppressions = await query(
       `SELECT email, reason, source, created_at FROM suppressions ORDER BY created_at DESC LIMIT 500`,
@@ -313,7 +338,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { suppressions: suppressions.rows });
   }
   if (request.method === "GET" && route === "/audit") {
-    const auth = await requirePermission(request, "audit.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const params = new URL(request.url).searchParams;
     const actionFilter = params.get("action")?.trim() ?? "";
@@ -338,7 +363,7 @@ export async function handleApi(request: Request, path: string[]) {
     });
   }
   if (request.method === "POST" && route === "/suppressions") {
-    const auth = await requirePermission(request, "suppressions.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     const body = await request.json().catch(() => ({})) as { email?: string; reason?: string };
@@ -349,8 +374,20 @@ export async function handleApi(request: Request, path: string[]) {
     await recordRequestAudit(request, auth.session.user_id, "suppression_created", "suppression", email, { reason: "manual" });
     return json(201, { suppression: { email, reason: "manual", source: "application" } });
   }
+  const suppressionMatch = route.match(/^\/suppressions\/([^/]+)$/);
+  if (request.method === "DELETE" && suppressionMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const email = normalizeEmail(decodeURIComponent(suppressionMatch[1]));
+    const deleted = await query(`DELETE FROM suppressions WHERE email = $1 RETURNING email`, [email]);
+    if (!deleted.rows[0]) return json(404, { error: "Suppression not found." });
+    await query(`UPDATE contacts SET status = 'active', updated_at = NOW() WHERE email = $1`, [email]);
+    await recordRequestAudit(request, auth.session.user_id, "suppression_deleted", "suppression", email);
+    return json(200, { ok: true });
+  }
   if (request.method === "POST" && route === "/users") {
-    const auth = await requirePermission(request, "users.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     const body = await request.json().catch(() => ({})) as { name?: string; email?: string; role?: string; password?: string };
@@ -373,7 +410,7 @@ export async function handleApi(request: Request, path: string[]) {
   }
   const userMatch = route.match(/^\/users\/([^/]+)$/);
   if (request.method === "PATCH" && userMatch) {
-    const auth = await requirePermission(request, "users.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     if (userMatch[1] === auth.session.user_id) return json(400, { error: "Another administrator must change your own access." });
@@ -392,9 +429,19 @@ export async function handleApi(request: Request, path: string[]) {
     await recordRequestAudit(request, auth.session.user_id, "user_access_updated", "user", userMatch[1], { email, role: body.role, active: body.active !== false });
     return json(200, { user: userPayload(updated.rows[0] as never, auth.session.user_id) });
   }
+  if (request.method === "DELETE" && userMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    if (userMatch[1] === auth.session.user_id) return json(400, { error: "You cannot delete your own account." });
+    const deleted = await query(`DELETE FROM users WHERE id = $1 RETURNING id`, [userMatch[1]]);
+    if (!deleted.rows[0]) return json(404, { error: "User not found." });
+    await recordRequestAudit(request, auth.session.user_id, "user_deleted", "user", userMatch[1]);
+    return json(200, { ok: true });
+  }
   const resetMatch = route.match(/^\/users\/([^/]+)\/reset-password$/);
   if (request.method === "POST" && resetMatch) {
-    const auth = await requirePermission(request, "users.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     const body = await request.json().catch(() => ({})) as { password?: string };
@@ -406,7 +453,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/contacts") {
-    const auth = await requirePermission(request, "contacts.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const search = new URL(request.url).searchParams.get("q")?.trim() ?? "";
     const contacts = await query(
@@ -421,8 +468,35 @@ export async function handleApi(request: Request, path: string[]) {
     );
     return json(200, { contacts: contacts.rows });
   }
+  const contactMatch = route.match(/^\/contacts\/([^/]+)$/);
+  if (request.method === "PATCH" && contactMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const body = await request.json().catch(() => ({})) as { email?: string; first_name?: string; last_name?: string; status?: string; consent_source?: string };
+    const email = normalizeEmail(body.email ?? "");
+    if (!validEmail(email)) return json(400, { error: "Enter a valid email address." });
+    if (!body.status || !["active", "suppressed"].includes(body.status)) return json(400, { error: "Select a valid contact status." });
+    const updated = await query(
+      `UPDATE contacts SET email = $1, first_name = $2, last_name = $3, status = $4, consent_source = $5, updated_at = NOW()
+       WHERE id = $6 RETURNING id, email, first_name, last_name, status, consent_source, created_at`,
+      [email, (body.first_name ?? "").trim(), (body.last_name ?? "").trim(), body.status, (body.consent_source ?? "manual").trim(), contactMatch[1]],
+    );
+    if (!updated.rows[0]) return json(404, { error: "Contact not found." });
+    await recordRequestAudit(request, auth.session.user_id, "contact_updated", "contact", contactMatch[1], { email, status: body.status });
+    return json(200, { contact: updated.rows[0] });
+  }
+  if (request.method === "DELETE" && contactMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const deleted = await query(`DELETE FROM contacts WHERE id = $1 RETURNING id`, [contactMatch[1]]);
+    if (!deleted.rows[0]) return json(404, { error: "Contact not found." });
+    await recordRequestAudit(request, auth.session.user_id, "contact_deleted", "contact", contactMatch[1]);
+    return json(200, { ok: true });
+  }
   if (request.method === "GET" && route === "/campaigns") {
-    const auth = await requirePermission(request, "campaigns.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const campaigns = await query(
       `SELECT c.id, c.name, c.subject, c.from_name, c.from_email, c.content_mode,
@@ -440,7 +514,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { campaigns: campaigns.rows });
   }
   if (request.method === "POST" && route === "/campaigns") {
-    const auth = await requirePermission(request, "campaigns.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) {
       return json(403, { error: "CSRF validation failed." });
@@ -495,7 +569,7 @@ export async function handleApi(request: Request, path: string[]) {
   }
   const campaignMatch = route.match(/^\/campaigns\/([^/]+)$/);
   if (request.method === "GET" && campaignMatch) {
-    const auth = await requirePermission(request, "campaigns.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const campaign = await campaignById(campaignMatch[1]);
     if (!campaign) return json(404, { error: "Campaign not found." });
@@ -505,9 +579,39 @@ export async function handleApi(request: Request, path: string[]) {
     );
     return json(200, { campaign: { ...campaign, stats: Object.fromEntries(stats.rows.map((row) => [row.status, row.count])) } });
   }
+  if (request.method === "PATCH" && campaignMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const body = await request.json().catch(() => ({})) as { name?: string; subject?: string; from_name?: string; from_email?: string; list_id?: string; content_mode?: string; content_json?: unknown; html_body?: string; text_body?: string };
+    const name = (body.name ?? "").trim();
+    const fromEmail = normalizeEmail(body.from_email ?? "");
+    if (!name || !(body.subject ?? "").trim() || !(body.from_name ?? "").trim()) return json(400, { error: "Name, sender, and subject are required." });
+    if (!validEmail(fromEmail)) return json(400, { error: "Enter a valid sender email address." });
+    const contentJson = typeof body.content_json === "string" ? body.content_json : JSON.stringify(body.content_json ?? { schema_version: 1 });
+    try { JSON.parse(contentJson); } catch { return json(400, { error: "Campaign content is invalid." }); }
+    const updated = await query(
+      `UPDATE campaigns SET name = $1, subject = $2, from_name = $3, from_email = $4, list_id = $5,
+       content_mode = $6, content_json = $7, html_body = $8, text_body = $9, updated_at = NOW()
+       WHERE id = $10 AND status IN ('draft', 'paused') RETURNING id, name, subject, status, list_id`,
+      [name, (body.subject ?? "").trim(), (body.from_name ?? "").trim(), fromEmail, body.list_id, body.content_mode ?? "custom_html", contentJson, body.html_body ?? "", body.text_body ?? "", campaignMatch[1]],
+    );
+    if (!updated.rows[0]) return json(404, { error: "Editable campaign not found." });
+    await recordRequestAudit(request, auth.session.user_id, "campaign_updated", "campaign", campaignMatch[1], { name, list_id: body.list_id });
+    return json(200, { campaign: updated.rows[0] });
+  }
+  if (request.method === "DELETE" && campaignMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const deleted = await query(`DELETE FROM campaigns WHERE id = $1 AND status = 'draft' RETURNING id`, [campaignMatch[1]]);
+    if (!deleted.rows[0]) return json(409, { error: "Only draft campaigns can be deleted." });
+    await recordRequestAudit(request, auth.session.user_id, "campaign_deleted", "campaign", campaignMatch[1]);
+    return json(200, { ok: true });
+  }
   const campaignAction = route.match(/^\/campaigns\/([^/]+)\/(test-send|launch|pause|resume)$/);
   if (request.method === "POST" && campaignAction) {
-    const auth = await requirePermission(request, "campaigns.send");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     const campaign = await campaignById(campaignAction[1]);
@@ -571,7 +675,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { queued: contacts.length, sent: contacts.length });
   }
   if (request.method === "GET" && route === "/messages") {
-    const auth = await requirePermission(request, "deliveries.view");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     const messages = await query(
       `SELECT m.id, m.to_email, m.subject, m.from_email, m.status, m.created_at, m.unsubscribe_token, c.name AS campaign_name
@@ -579,8 +683,25 @@ export async function handleApi(request: Request, path: string[]) {
     );
     return json(200, { messages: messages.rows });
   }
+  const messageMatch = route.match(/^\/messages\/([^/]+)$/);
+  if (request.method === "GET" && messageMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    const message = await query(`SELECT m.*, c.name AS campaign_name FROM messages m LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.id = $1`, [messageMatch[1]]);
+    if (!message.rows[0]) return json(404, { error: "Message not found." });
+    return json(200, { message: message.rows[0] });
+  }
+  if (request.method === "DELETE" && messageMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const deleted = await query(`DELETE FROM messages WHERE id = $1 RETURNING id`, [messageMatch[1]]);
+    if (!deleted.rows[0]) return json(404, { error: "Message not found." });
+    await recordRequestAudit(request, auth.session.user_id, "message_deleted", "message", messageMatch[1]);
+    return json(200, { ok: true });
+  }
   if (request.method === "POST" && route === "/contacts") {
-    const auth = await requirePermission(request, "contacts.manage");
+    const auth = await requireAdmin(request);
     if (auth.response) return auth.response;
     if (!hasValidCsrf(request, auth.session.csrf_token)) {
       return json(403, { error: "CSRF validation failed." });
