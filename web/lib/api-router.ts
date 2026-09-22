@@ -4,6 +4,7 @@ import { config } from "./config";
 import { query } from "./db";
 import { hashPassword, normalizeEmail, validEmail, verifyPassword } from "./ids";
 import { sendResendEmail } from "./providers/resend";
+import { applySuppression } from "./suppressions";
 
 const ADMIN_PERMISSIONS = [
   "overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view",
@@ -254,6 +255,25 @@ export async function handleApi(request: Request, path: string[]) {
       roles: ROLE_DEFINITIONS,
       permissions: PERMISSION_DEFINITIONS,
     });
+  }
+  if (request.method === "GET" && route === "/suppressions") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    const suppressions = await query(
+      `SELECT email, reason, source, created_at FROM suppressions ORDER BY created_at DESC LIMIT 500`,
+    );
+    return json(200, { suppressions: suppressions.rows });
+  }
+  if (request.method === "POST" && route === "/suppressions") {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const body = await request.json().catch(() => ({})) as { email?: string; reason?: string };
+    const email = normalizeEmail(body.email ?? "");
+    if (!validEmail(email)) return json(400, { error: "Enter a valid email address." });
+    if (body.reason !== "manual") return json(400, { error: "Manual suppressions must use the manual reason." });
+    await applySuppression(email, "manual", "application");
+    return json(201, { suppression: { email, reason: "manual", source: "application" } });
   }
   if (request.method === "POST" && route === "/users") {
     const auth = await requireAdmin(request);
