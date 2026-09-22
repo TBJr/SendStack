@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   experimental: {
     // Ensure instrumentation.ts runs for env validation.
+    serverActions: {
+      bodySizeLimit: "12mb",
+    },
   },
   async rewrites() {
     return [{ source: "/", destination: "/index.html" }];

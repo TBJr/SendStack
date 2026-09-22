@@ -2,9 +2,14 @@ import { createHash, randomBytes } from "crypto";
 import { json } from "./http";
 import { config } from "./config";
 import { query } from "./db";
-import { hashPassword, normalizeEmail, validEmail, verifyPassword } from "./ids";
+import { hashPassword, makeId, normalizeEmail, validEmail, verifyPassword } from "./ids";
 import { sendResendEmail } from "./providers/resend";
 import { applySuppression } from "./suppressions";
+import {
+  ATTACHMENT_MAX_COUNT,
+  attachmentMeta,
+  validateCampaignAttachment,
+} from "./attachments";
 
 const ADMIN_PERMISSIONS = [
   "overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view",
@@ -203,6 +208,41 @@ async function campaignById(id: string) {
     [id],
   );
   return result.rows[0] ?? null;
+}
+
+async function listCampaignAttachmentMeta(campaignId: string) {
+  const result = await query<{
+    id: string;
+    filename: string;
+    content_type: string;
+    byte_size: number;
+  }>(
+    `SELECT id, filename, content_type, byte_size
+       FROM campaign_attachments
+      WHERE campaign_id = $1
+      ORDER BY created_at ASC`,
+    [campaignId],
+  );
+  return result.rows.map(attachmentMeta);
+}
+
+async function loadCampaignAttachmentsForSend(campaignId: string) {
+  const result = await query<{
+    filename: string;
+    content_type: string;
+    content: Buffer;
+  }>(
+    `SELECT filename, content_type, content
+       FROM campaign_attachments
+      WHERE campaign_id = $1
+      ORDER BY created_at ASC`,
+    [campaignId],
+  );
+  return result.rows.map((row) => ({
+    filename: row.filename,
+    contentType: row.content_type,
+    contentBase64: Buffer.from(row.content).toString("base64"),
+  }));
 }
 
 function readinessResponse() {
@@ -600,7 +640,84 @@ export async function handleApi(request: Request, path: string[]) {
       [id, name, subject, fromName, fromEmail, contentMode, contentJson, body.html_body ?? "", body.text_body ?? "", listId, auth.session.user_id],
     );
     await recordRequestAudit(request, auth.session.user_id, "campaign_created", "campaign", id, { name, list_id: listId, content_mode: contentMode });
-    return json(201, { campaign: { id, name, subject, status: "draft", list_id: listId } });
+    return json(201, { campaign: { id, name, subject, status: "draft", list_id: listId, attachments: [] } });
+  }
+  const attachmentDeleteMatch = route.match(/^\/campaigns\/([^/]+)\/attachments\/([^/]+)$/);
+  if (request.method === "DELETE" && attachmentDeleteMatch) {
+    const auth = await requirePermission(request, "campaigns.manage");
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const campaign = await campaignById(attachmentDeleteMatch[1]);
+    if (!campaign) return json(404, { error: "Campaign not found." });
+    if (campaign.status !== "draft") return json(409, { error: "Attachments can only be changed on draft campaigns." });
+    const deleted = await query(
+      `DELETE FROM campaign_attachments WHERE id = $1 AND campaign_id = $2 RETURNING id, filename`,
+      [attachmentDeleteMatch[2], campaign.id],
+    );
+    if (!deleted.rows[0]) return json(404, { error: "Attachment not found." });
+    await recordRequestAudit(request, auth.session.user_id, "campaign_attachment_deleted", "campaign", campaign.id, {
+      attachment_id: deleted.rows[0].id,
+      filename: deleted.rows[0].filename,
+    });
+    return json(200, { ok: true, attachments: await listCampaignAttachmentMeta(campaign.id) });
+  }
+  const attachmentCollectionMatch = route.match(/^\/campaigns\/([^/]+)\/attachments$/);
+  if (request.method === "GET" && attachmentCollectionMatch) {
+    const auth = await requirePermission(request, "campaigns.view");
+    if (auth.response) return auth.response;
+    const campaign = await campaignById(attachmentCollectionMatch[1]);
+    if (!campaign) return json(404, { error: "Campaign not found." });
+    return json(200, { attachments: await listCampaignAttachmentMeta(campaign.id) });
+  }
+  if (request.method === "POST" && attachmentCollectionMatch) {
+    const auth = await requirePermission(request, "campaigns.manage");
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const campaign = await campaignById(attachmentCollectionMatch[1]);
+    if (!campaign) return json(404, { error: "Campaign not found." });
+    if (campaign.status !== "draft") return json(409, { error: "Attachments can only be added to draft campaigns." });
+
+    const form = await request.formData().catch(() => null);
+    const file = form?.get("file");
+    if (!(file instanceof File)) return json(400, { error: "Choose a file to attach." });
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const existing = await query<{ count: string; total_bytes: string }>(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(byte_size), 0)::int AS total_bytes
+         FROM campaign_attachments WHERE campaign_id = $1`,
+      [campaign.id],
+    );
+    const existingCount = Number(existing.rows[0]?.count ?? 0);
+    const existingTotalBytes = Number(existing.rows[0]?.total_bytes ?? 0);
+    const validated = validateCampaignAttachment({
+      filename: file.name || "attachment",
+      contentType: file.type || "",
+      byteSize: bytes.length,
+      existingCount,
+      existingTotalBytes,
+    });
+    if (!validated.ok) return json(400, { error: validated.error });
+
+    const attachmentId = makeId("att");
+    await query(
+      `INSERT INTO campaign_attachments (id, campaign_id, filename, content_type, byte_size, content, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [attachmentId, campaign.id, validated.filename, validated.contentType, bytes.length, bytes],
+    );
+    await recordRequestAudit(request, auth.session.user_id, "campaign_attachment_added", "campaign", campaign.id, {
+      attachment_id: attachmentId,
+      filename: validated.filename,
+      byte_size: bytes.length,
+    });
+    return json(201, {
+      attachment: {
+        id: attachmentId,
+        filename: validated.filename,
+        content_type: validated.contentType,
+        byte_size: bytes.length,
+      },
+      attachments: await listCampaignAttachmentMeta(campaign.id),
+      limits: { max_count: ATTACHMENT_MAX_COUNT },
+    });
   }
   const campaignMatch = route.match(/^\/campaigns\/([^/]+)$/);
   if (request.method === "GET" && campaignMatch) {
@@ -612,7 +729,14 @@ export async function handleApi(request: Request, path: string[]) {
       `SELECT status, COUNT(*)::int AS count FROM campaign_recipients WHERE campaign_id = $1 GROUP BY status`,
       [campaign.id],
     );
-    return json(200, { campaign: { ...campaign, stats: Object.fromEntries(stats.rows.map((row) => [row.status, row.count])) } });
+    const attachments = await listCampaignAttachmentMeta(campaign.id);
+    return json(200, {
+      campaign: {
+        ...campaign,
+        stats: Object.fromEntries(stats.rows.map((row) => [row.status, row.count])),
+        attachments,
+      },
+    });
   }
   if (request.method === "PATCH" && campaignMatch) {
     const auth = await requireAdmin(request);
@@ -670,6 +794,7 @@ export async function handleApi(request: Request, path: string[]) {
       await recordRequestAudit(request, auth.session.user_id, `campaign_${campaignAction[2]}d`, "campaign", campaign.id, { status });
       return json(200, { ok: true, status });
     }
+    const sendAttachments = await loadCampaignAttachmentsForSend(campaign.id);
     for (const contact of contacts) {
       const recipientId = `rec_${randomBytes(16).toString("hex")}`;
       const messageId = `msg_${randomBytes(16).toString("hex")}`;
@@ -681,12 +806,13 @@ export async function handleApi(request: Request, path: string[]) {
       const providerEmail = config.deliveryMode === "resend"
         ? await sendResendEmail({
             to: contact.email,
-        subject,
+            subject,
             html: htmlBody,
             text: textBody,
             fromName: campaign.from_name,
             fromEmail: campaign.from_email,
             unsubscribeUrl,
+            attachments: sendAttachments,
           })
         : null;
       if (contact.id) {

@@ -257,7 +257,8 @@ function toast(message, type = "success") {
 
 async function api(path, options = {}) {
   const request = { ...options, headers: { ...(options.headers || {}) } };
-  if (request.body && typeof request.body !== "string") {
+  const isFormData = typeof FormData !== "undefined" && request.body instanceof FormData;
+  if (request.body && typeof request.body !== "string" && !isFormData) {
     request.headers["Content-Type"] = "application/json";
     request.body = JSON.stringify(request.body);
   }
@@ -275,6 +276,28 @@ async function api(path, options = {}) {
     throw new Error(data?.error || `Request failed (${response.status})`);
   }
   return data;
+}
+
+const ATTACHMENT_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp,.pdf,.zip";
+const ATTACHMENT_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_MAX_COUNT = 3;
+
+function formatByteSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentListMarkup(attachments, { editable = false } = {}) {
+  if (!attachments?.length) {
+    return `<p class="help attachment-empty">${editable ? "No files attached yet." : "No attachments."}</p>`;
+  }
+  return `<ul class="attachment-list">${attachments.map((file) => `
+    <li class="attachment-item">
+      <div><strong>${escapeHtml(file.filename)}</strong><span class="subtext">${escapeHtml(formatByteSize(file.byte_size))}</span></div>
+      ${editable ? `<button type="button" class="button small ghost" data-remove-attachment="${escapeHtml(file.id)}">Remove</button>` : ""}
+    </li>`).join("")}</ul>`;
 }
 
 function showLogin() {
@@ -687,6 +710,8 @@ async function openCampaignComposer(campaignId = null) {
     campaignId ? api(`/api/campaigns/${campaignId}`) : Promise.resolve(null),
   ]);
   const campaign = campaignData?.campaign || {};
+  let activeCampaignId = campaignId;
+  let attachments = Array.isArray(campaign.attachments) ? [...campaign.attachments] : [];
   const storedContent = safeContentObject(campaign.content_json);
   let selectedMode = contentModes.some((mode) => mode.id === campaign.content_mode) ? campaign.content_mode : (campaignId ? "custom_html" : "visual");
   const modeDrafts = {
@@ -705,7 +730,14 @@ async function openCampaignComposer(campaignId = null) {
         ${contentModePicker(selectedMode)}
         <div id="mode-editor-host">${modeEditorMarkup(selectedMode, modeDrafts[selectedMode])}</div>
         <p class="help variable-help">Personalization: {{first_name}}, {{last_name}}, {{email}}, {{unsubscribe_url}}</p>
-        <p class="form-error" role="alert"></p>
+        <section class="attachment-panel" id="attachment-panel">
+          <div class="attachment-panel-head">
+            <div><strong>Attachments</strong><p class="help">PNG, JPG, GIF, WebP, PDF, or ZIP. Up to 3 files, 5 MB each (10 MB total). Some inboxes filter ZIP archives.</p></div>
+          </div>
+          <div id="attachment-list">${activeCampaignId ? attachmentListMarkup(attachments, { editable: true }) : `<p class="help attachment-empty">Save the draft first, then edit it to add attachments.</p>`}</div>
+          ${activeCampaignId ? `<label class="attachment-upload button small">Add file<input id="attachment-input" type="file" accept="${ATTACHMENT_ACCEPT}" ${attachments.length >= ATTACHMENT_MAX_COUNT ? "disabled" : ""} /></label><p class="form-error" id="attachment-error" role="alert"></p>` : ""}
+        </section>
+        <p class="form-error" data-form-error role="alert"></p>
         <div class="form-actions"><button type="button" class="button" data-close-modal>Cancel</button><button class="button primary" type="submit">${campaignId ? "Save changes" : "Save draft"}</button></div>
       </div>
       <div class="preview-shell"><div class="preview-bar"><span>PERSONALIZED PREVIEW</span><div class="preview-dots"><span></span><span></span><span></span></div></div><iframe class="email-preview" title="Email preview" sandbox=""></iframe></div>
@@ -765,19 +797,82 @@ async function openCampaignComposer(campaignId = null) {
   }));
   attachEditorEvents();
   updatePreview();
+  const refreshAttachmentUi = () => {
+    const listHost = form.querySelector("#attachment-list");
+    const input = form.querySelector("#attachment-input");
+    if (listHost) listHost.innerHTML = attachmentListMarkup(attachments, { editable: Boolean(activeCampaignId) });
+    if (input) input.disabled = attachments.length >= ATTACHMENT_MAX_COUNT;
+  };
+  const bindAttachmentControls = () => {
+    const input = form.querySelector("#attachment-input");
+    const errorEl = form.querySelector("#attachment-error");
+    input?.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file || !activeCampaignId) return;
+      if (errorEl) errorEl.textContent = "";
+      if (file.size > ATTACHMENT_MAX_FILE_BYTES) {
+        if (errorEl) errorEl.textContent = "Each attachment must be 5 MB or smaller.";
+        return;
+      }
+      try {
+        const body = new FormData();
+        body.append("file", file);
+        const result = await api(`/api/campaigns/${activeCampaignId}/attachments`, { method: "POST", body });
+        attachments = result.attachments || [];
+        refreshAttachmentUi();
+        toast("Attachment added");
+      } catch (error) {
+        if (errorEl) errorEl.textContent = error.message;
+        else toast(error.message, "error");
+      }
+    });
+    form.querySelector("#attachment-list")?.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-remove-attachment]");
+      if (!button || !activeCampaignId) return;
+      try {
+        const result = await api(`/api/campaigns/${activeCampaignId}/attachments/${button.dataset.removeAttachment}`, { method: "DELETE", body: {} });
+        attachments = result.attachments || [];
+        refreshAttachmentUi();
+        toast("Attachment removed");
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    });
+  };
+  bindAttachmentControls();
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     captureModeDraft();
     const content = buildCampaignContent(selectedMode, modeDrafts[selectedMode]);
     const payload = Object.fromEntries(new FormData(form));
+    delete payload.file;
     payload.content_mode = selectedMode;
     payload.content_json = content.content_json;
     payload.html_body = content.html_body;
     payload.text_body = content.text_body;
-    const path = campaignId ? `/api/campaigns/${campaignId}` : "/api/campaigns";
-    const method = campaignId ? "PATCH" : "POST";
-    await submitForm(form, () => api(path, { method, body: payload }), campaignId ? "Campaign updated" : "Draft saved");
-    if (!form.querySelector(".form-error").textContent) {
+    const path = activeCampaignId ? `/api/campaigns/${activeCampaignId}` : "/api/campaigns";
+    const method = activeCampaignId ? "PATCH" : "POST";
+    const result = await submitForm(form, () => api(path, { method, body: payload }), activeCampaignId ? "Campaign updated" : "Draft saved");
+    if (!(form.querySelector("[data-form-error]") || form.querySelector(".form-error"))?.textContent) {
+      if (!activeCampaignId && result?.campaign?.id) {
+        activeCampaignId = result.campaign.id;
+        toast("Draft saved — you can add attachments now");
+        const panel = form.querySelector("#attachment-panel");
+        if (panel) {
+          panel.querySelector("#attachment-list")?.remove();
+          const uploadHtml = `<div id="attachment-list">${attachmentListMarkup(attachments, { editable: true })}</div>
+            <label class="attachment-upload button small">Add file<input id="attachment-input" type="file" accept="${ATTACHMENT_ACCEPT}" /></label>
+            <p class="form-error" id="attachment-error" role="alert"></p>`;
+          panel.insertAdjacentHTML("beforeend", uploadHtml);
+          form.querySelector(".help.attachment-empty")?.remove();
+          bindAttachmentControls();
+          refreshAttachmentUi();
+        }
+        const submitBtn = form.querySelector("button[type=submit]");
+        if (submitBtn) submitBtn.textContent = "Save changes";
+        return;
+      }
       closeModal();
       if (state.currentView === "campaigns") await renderCampaigns();
       else await navigate("campaigns");
@@ -802,6 +897,10 @@ async function openCampaignDetails(campaignId) {
         </div></section>
         <section class="panel"><div class="panel-head"><h3>Timing</h3></div><div class="panel-body"><div class="metric-line"><span>Created</span><strong>${formatDate(campaign.created_at)}</strong></div><div class="metric-line"><span>Launched</span><strong>${formatDate(campaign.launched_at)}</strong></div><div class="metric-line"><span>Completed</span><strong>${formatDate(campaign.completed_at)}</strong></div></div></section>
       </div>
+      <section class="panel">
+        <div class="panel-head"><h3>Attachments</h3></div>
+        <div class="panel-body">${attachmentListMarkup(campaign.attachments || [], { editable: false })}</div>
+      </section>
       <div class="form-actions"><button class="button" data-close-modal>Close</button>${can("deliveries.view") ? `<button class="button primary" id="view-campaign-deliveries">View deliveries</button>` : ""}</div>
     </div>`, false);
   document.querySelector("#view-campaign-deliveries")?.addEventListener("click", () => {
@@ -1029,19 +1128,19 @@ function closeModal() {
 }
 
 async function submitForm(form, request, successMessage) {
-  const error = form.querySelector(".form-error");
+  const error = form.querySelector("[data-form-error]") || form.querySelector(".form-error");
   const submit = form.querySelector('[type="submit"]');
-  error.textContent = "";
-  submit.disabled = true;
+  if (error) error.textContent = "";
+  if (submit) submit.disabled = true;
   try {
     const result = await request();
     toast(successMessage);
     return result;
   } catch (requestError) {
-    error.textContent = requestError.message;
+    if (error) error.textContent = requestError.message;
     return null;
   } finally {
-    submit.disabled = false;
+    if (submit) submit.disabled = false;
   }
 }
 

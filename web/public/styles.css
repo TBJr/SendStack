@@ -460,6 +460,44 @@ label { display: grid; gap: 7px; color: #b7c5d9; font-size: 13px; font-weight: 6
 
 .composer { display: grid; grid-template-columns: minmax(320px, .9fr) minmax(390px, 1.1fr); gap: 20px; }
 .composer-fields { display: grid; gap: 14px; align-content: start; }
+.attachment-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0b1728;
+}
+.attachment-panel-head strong { display: block; font-size: 13px; color: #d7e2f2; }
+.attachment-panel-head .help { margin-top: 4px; }
+.attachment-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.attachment-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255,255,255,.02);
+}
+.attachment-item .subtext { display: block; margin-top: 2px; }
+.attachment-empty { margin: 0; }
+.attachment-upload {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+}
+.attachment-upload input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.attachment-upload:has(input:disabled) { opacity: .45; pointer-events: none; }
 .field-label { display: block; color: #b7c5d9; font-size: 13px; font-weight: 650; }
 .content-mode-section { display: grid; gap: 8px; }
 .content-mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }

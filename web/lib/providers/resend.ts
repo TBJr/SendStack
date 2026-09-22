@@ -1,5 +1,11 @@
 import { config } from "../config";
 
+export type ResendAttachment = {
+  filename: string;
+  contentBase64: string;
+  contentType: string;
+};
+
 export type ResendEmailInput = {
   to: string;
   subject: string;
@@ -8,6 +14,7 @@ export type ResendEmailInput = {
   fromName: string;
   fromEmail: string;
   unsubscribeUrl?: string;
+  attachments?: ResendAttachment[];
 };
 
 export async function sendResendEmail(input: ResendEmailInput): Promise<{ id: string }> {
@@ -27,13 +34,26 @@ export async function sendResendEmail(input: ResendEmailInput): Promise<{ id: st
       subject: input.subject,
       html: input.html,
       text: input.text,
-      headers: input.unsubscribeUrl ? {
-        "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
-        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-      } : undefined,
+      headers: input.unsubscribeUrl
+        ? {
+            "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          }
+        : undefined,
+      attachments: input.attachments?.length
+        ? input.attachments.map((file) => ({
+            filename: file.filename,
+            content: file.contentBase64,
+            content_type: file.contentType,
+          }))
+        : undefined,
     }),
   });
-  const payload = await response.json().catch(() => ({})) as { id?: string; message?: string; name?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    id?: string;
+    message?: string;
+    name?: string;
+  };
   if (!response.ok || !payload.id) {
     throw new Error(payload.message || payload.name || `Resend request failed (${response.status}).`);
   }
