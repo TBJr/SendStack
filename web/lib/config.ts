@@ -10,13 +10,18 @@ function booleanEnv(name: string, fallback: boolean): boolean {
 
 const nodeEnv = process.env.NODE_ENV ?? "development";
 const vercelEnv = process.env.VERCEL_ENV ?? "";
+const liveSendEnabled = booleanEnv("SENDSTACK_LIVE_SEND_ENABLED", false);
+const deliveryMode =
+  process.env.SENDSTACK_DELIVERY_MODE?.trim().toLowerCase() ||
+  (liveSendEnabled && process.env.RESEND_API_KEY ? "resend" : "sandbox");
 
 export const config = {
   nodeEnv,
   isVercelProduction: vercelEnv === "production",
   isVercelPreview: vercelEnv === "preview",
   databaseUrl: process.env.DATABASE_URL ?? "",
-  deliveryMode: process.env.SENDSTACK_DELIVERY_MODE ?? "sandbox",
+  deliveryMode,
+  liveSendEnabled,
   adminEmail: process.env.SENDSTACK_ADMIN_EMAIL ?? "admin@sendstack.local",
   adminPassword: process.env.SENDSTACK_ADMIN_PASSWORD ?? "ChangeMe123!",
   defaultAdminPassword: "ChangeMe123!",

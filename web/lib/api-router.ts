@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { json } from "./http";
 import { config } from "./config";
 import { query } from "./db";
-import { hashPassword, normalizeEmail, verifyPassword } from "./ids";
+import { hashPassword, normalizeEmail, validEmail, verifyPassword } from "./ids";
 
 const ADMIN_PERMISSIONS = [
   "overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view",
@@ -49,7 +49,7 @@ function sessionPayload(session: NonNullable<Awaited<ReturnType<typeof currentSe
   return {
     csrf_token: session.csrf_token,
     permissions: session.role === "admin" ? ADMIN_PERMISSIONS : [],
-    delivery_mode: "sandbox",
+    delivery_mode: config.deliveryMode,
     must_change_password: session.must_change_password,
     user: {
       id: session.user_id,
@@ -108,6 +108,36 @@ async function summaryResponse() {
   });
 }
 
+async function campaignById(id: string) {
+  const result = await query<{
+    id: string; name: string; subject: string; from_name: string; from_email: string;
+    content_mode: string; content_json: string; html_body: string; text_body: string;
+    list_id: string; list_name: string; status: string; created_at: string;
+    launched_at: string | null; completed_at: string | null;
+  }>(
+    `SELECT c.*, l.name AS list_name FROM campaigns c JOIN lists l ON l.id = c.list_id WHERE c.id = $1`,
+    [id],
+  );
+  return result.rows[0] ?? null;
+}
+
+function readinessResponse() {
+  const resendConfigured = Boolean(process.env.RESEND_API_KEY && process.env.RESEND_WEBHOOK_SECRET);
+  const production = config.isVercelProduction || config.nodeEnv === "production";
+  return json(200, {
+    target: { platform: "Vercel", database: "Managed PostgreSQL", provider: "Resend Broadcasts" },
+    current: { runtime: "Vercel", database: config.databaseUrl ? "PostgreSQL" : "Not configured", transport: config.deliveryMode },
+    ready_for_live_sending: production && config.deliveryMode === "resend" && config.liveSendEnabled && resendConfigured,
+    checks: [
+      { id: "vercel_runtime", label: "Vercel runtime", status: production ? "ready" : "pending", detail: production ? "Running in a production Vercel environment." : "Deploy the production project on Vercel." },
+      { id: "postgres_database", label: "PostgreSQL database", status: config.databaseUrl ? "ready" : "migration_required", detail: config.databaseUrl ? "Managed PostgreSQL is configured." : "Set DATABASE_URL and run migrations." },
+      { id: "resend_broadcasts", label: "Resend delivery", status: resendConfigured ? "configured_locked" : "not_connected", detail: resendConfigured ? "Resend credentials are configured; provider sending remains locked until implemented." : "Set RESEND_API_KEY and RESEND_WEBHOOK_SECRET." },
+    ],
+    delivery_path: ["Create a campaign draft", "Verify the audience and suppressions", "Submit through the configured delivery provider"],
+    volume_plan: { goal: `${Number(process.env.SENDSTACK_DAILY_LIMIT ?? 50).toLocaleString()} emails/day`, launch_policy: "Increase volume only after delivery and complaint signals remain healthy." },
+  });
+}
+
 export async function handleApi(request: Request, path: string[]) {
   const route = `/${path.join("/")}`;
   if (request.method === "POST" && route === "/auth/login") {
@@ -141,6 +171,11 @@ export async function handleApi(request: Request, path: string[]) {
     if (auth.response) return auth.response;
     return summaryResponse();
   }
+  if (request.method === "GET" && route === "/production-readiness") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    return readinessResponse();
+  }
   if (request.method === "GET" && route === "/lists") {
     const auth = await requireSession(request);
     if (auth.response) return auth.response;
@@ -166,6 +201,185 @@ export async function handleApi(request: Request, path: string[]) {
       [search],
     );
     return json(200, { contacts: contacts.rows });
+  }
+  if (request.method === "GET" && route === "/campaigns") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    const campaigns = await query(
+      `SELECT c.id, c.name, c.subject, c.from_name, c.from_email, c.content_mode,
+              c.status, c.created_at, l.name AS list_name,
+              COUNT(cr.id)::int AS recipients,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'sent')::int AS sent,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'queued')::int AS queued,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'failed')::int AS failed,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'bounced')::int AS bounced,
+              COUNT(cr.id) FILTER (WHERE cr.status = 'complained')::int AS complained
+         FROM campaigns c JOIN lists l ON l.id = c.list_id
+         LEFT JOIN campaign_recipients cr ON cr.campaign_id = c.id
+        GROUP BY c.id, l.name ORDER BY c.created_at DESC`,
+    );
+    return json(200, { campaigns: campaigns.rows });
+  }
+  if (request.method === "POST" && route === "/campaigns") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) {
+      return json(403, { error: "CSRF validation failed." });
+    }
+
+    const body = await request.json().catch(() => ({})) as {
+      name?: string;
+      list_id?: string;
+      from_name?: string;
+      from_email?: string;
+      subject?: string;
+      content_mode?: string;
+      content_json?: unknown;
+      html_body?: string;
+      text_body?: string;
+    };
+    const name = (body.name ?? "").trim();
+    const listId = body.list_id ?? "";
+    const fromName = (body.from_name ?? "").trim();
+    const fromEmail = normalizeEmail(body.from_email ?? "");
+    const subject = (body.subject ?? "").trim();
+    const contentMode = body.content_mode ?? "custom_html";
+    const validModes = ["visual", "rich_text", "custom_html", "plain_text"];
+    if (!name || !fromName || !subject) return json(400, { error: "Name, sender, and subject are required." });
+    if (!validEmail(fromEmail)) return json(400, { error: "Enter a valid sender email address." });
+    if (!listId) return json(400, { error: "Select an audience list." });
+    if (!validModes.includes(contentMode)) return json(400, { error: "Select a valid message format." });
+    const list = await query(`SELECT id FROM lists WHERE id = $1`, [listId]);
+    if (!list.rows[0]) return json(400, { error: "The selected list does not exist." });
+
+    let contentJson = "{\"schema_version\":1}";
+    if (body.content_json) {
+      try {
+        const parsedContent = typeof body.content_json === "string"
+          ? JSON.parse(body.content_json)
+          : body.content_json;
+        contentJson = JSON.stringify(parsedContent);
+      } catch {
+        return json(400, { error: "Campaign content is invalid." });
+      }
+    }
+    const id = `cam_${randomBytes(16).toString("hex")}`;
+    await query(
+      `INSERT INTO campaigns
+         (id, name, subject, from_name, from_email, content_mode, content_json, html_body, text_body,
+          list_id, status, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft', $11, NOW(), NOW())`,
+      [id, name, subject, fromName, fromEmail, contentMode, contentJson, body.html_body ?? "", body.text_body ?? "", listId, auth.session.user_id],
+    );
+    return json(201, { campaign: { id, name, subject, status: "draft", list_id: listId } });
+  }
+  const campaignMatch = route.match(/^\/campaigns\/([^/]+)$/);
+  if (request.method === "GET" && campaignMatch) {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    const campaign = await campaignById(campaignMatch[1]);
+    if (!campaign) return json(404, { error: "Campaign not found." });
+    const stats = await query<{ status: string; count: string }>(
+      `SELECT status, COUNT(*)::int AS count FROM campaign_recipients WHERE campaign_id = $1 GROUP BY status`,
+      [campaign.id],
+    );
+    return json(200, { campaign: { ...campaign, stats: Object.fromEntries(stats.rows.map((row) => [row.status, row.count])) } });
+  }
+  const campaignAction = route.match(/^\/campaigns\/([^/]+)\/(test-send|launch|pause|resume)$/);
+  if (request.method === "POST" && campaignAction) {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const campaign = await campaignById(campaignAction[1]);
+    if (!campaign) return json(404, { error: "Campaign not found." });
+    if (config.deliveryMode === "resend") {
+      return json(503, { error: "Resend delivery is configured but the provider sender is not enabled in this runtime. Use sandbox or deploy the Resend provider." });
+    }
+    const body = await request.json().catch(() => ({})) as { email?: string };
+    const targetEmail = normalizeEmail(body.email ?? "");
+    const contacts = campaignAction[2] === "test-send"
+      ? [{ id: null, email: targetEmail, first_name: "Test", last_name: "Recipient" }]
+      : (await query<{ id: string; email: string; first_name: string; last_name: string }>(
+          `SELECT c.id, c.email, c.first_name, c.last_name
+             FROM contacts c JOIN list_contacts lc ON lc.contact_id = c.id
+            WHERE lc.list_id = $1 AND c.status = 'active'
+              AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.email = c.email)`,
+          [campaign.list_id],
+        )).rows;
+    if (campaignAction[2] === "test-send" && !validEmail(targetEmail)) return json(400, { error: "Enter a valid test recipient email." });
+    if (campaignAction[2] === "launch" && campaign.status !== "draft" && campaign.status !== "paused") return json(400, { error: "Only draft or paused campaigns can be launched." });
+    if (campaignAction[2] === "pause" || campaignAction[2] === "resume") {
+      const status = campaignAction[2] === "pause" ? "paused" : "sending";
+      await query(`UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2`, [status, campaign.id]);
+      return json(200, { ok: true, status });
+    }
+    for (const contact of contacts) {
+      const recipientId = `rec_${randomBytes(16).toString("hex")}`;
+      const messageId = `msg_${randomBytes(16).toString("hex")}`;
+      const unsubscribeToken = randomBytes(24).toString("base64url");
+      await query(
+        `INSERT INTO campaign_recipients (id, campaign_id, contact_id, email, status, message_id, queued_at)
+         VALUES ($1, $2, $3, $4, 'sent', $5, NOW()) ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+        [recipientId, campaign.id, contact.id, contact.email, messageId],
+      );
+      await query(
+        `INSERT INTO messages (id, campaign_id, recipient_id, contact_id, to_email, subject, from_email, html_body, text_body, status, unsubscribe_token, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'captured', $10, NOW())`,
+        [messageId, campaign.id, recipientId, contact.id, contact.email, campaign.subject, campaign.from_email, campaign.html_body, campaign.text_body, unsubscribeToken],
+      );
+    }
+    await query(`UPDATE campaigns SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, [campaign.id]);
+    return json(200, { queued: contacts.length, sent: contacts.length });
+  }
+  if (request.method === "GET" && route === "/messages") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    const messages = await query(
+      `SELECT m.id, m.to_email, m.subject, m.from_email, m.status, m.created_at, m.unsubscribe_token, c.name AS campaign_name
+         FROM messages m LEFT JOIN campaigns c ON c.id = m.campaign_id ORDER BY m.created_at DESC LIMIT 500`,
+    );
+    return json(200, { messages: messages.rows });
+  }
+  if (request.method === "POST" && route === "/contacts") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) {
+      return json(403, { error: "CSRF validation failed." });
+    }
+
+    const body = await request.json().catch(() => ({})) as {
+      email?: string;
+      first_name?: string;
+      last_name?: string;
+      consent_source?: string;
+      list_id?: string;
+    };
+    const email = normalizeEmail(body.email ?? "");
+    const firstName = (body.first_name ?? "").trim();
+    const lastName = (body.last_name ?? "").trim();
+    const consentSource = (body.consent_source ?? "").trim();
+    if (!validEmail(email)) return json(400, { error: "Enter a valid email address." });
+    if (!consentSource) return json(400, { error: "Consent source is required." });
+    if (!body.list_id) return json(400, { error: "Select a destination list." });
+
+    const list = await query(`SELECT id FROM lists WHERE id = $1`, [body.list_id]);
+    if (!list.rows[0]) return json(400, { error: "The selected list does not exist." });
+    const existing = await query(`SELECT id FROM contacts WHERE email = $1`, [email]);
+    if (existing.rows[0]) return json(409, { error: "That email address already exists." });
+
+    const id = `con_${randomBytes(16).toString("hex")}`;
+    const suppressed = await query(`SELECT 1 FROM suppressions WHERE email = $1`, [email]);
+    await query(
+      `INSERT INTO contacts
+         (id, email, first_name, last_name, status, consent_source, consent_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW())`,
+      [id, email, firstName, lastName, suppressed.rows[0] ? "suppressed" : "active", consentSource],
+    );
+    await query(
+      `INSERT INTO list_contacts (list_id, contact_id, added_at) VALUES ($1, $2, NOW())`,
+      [body.list_id, id],
+    );
+    return json(201, { contact: { id, email, first_name: firstName, last_name: lastName } });
   }
   if (request.method === "POST" && route === "/auth/change-password") {
     const session = await currentSession(request);
