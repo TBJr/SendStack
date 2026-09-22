@@ -120,6 +120,14 @@ function userPayload(user: { id: string; email: string; name: string; role: stri
   };
 }
 
+async function recordAudit(actorUserId: string, action: string, entityType: string, entityId: string | null, detail: Record<string, unknown> = {}) {
+  await query(
+    `INSERT INTO audit_events (actor_user_id, action, entity_type, entity_id, detail_json, created_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())`,
+    [actorUserId, action, entityType, entityId, JSON.stringify(detail)],
+  );
+}
+
 async function summaryResponse() {
   const counts = await query<{
     contacts: string;
@@ -263,6 +271,25 @@ export async function handleApi(request: Request, path: string[]) {
       `SELECT email, reason, source, created_at FROM suppressions ORDER BY created_at DESC LIMIT 500`,
     );
     return json(200, { suppressions: suppressions.rows });
+  if (request.method === "GET" && route === "/audit") {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    const events = await query<{
+      id: string; actor_user_id: string | null; actor_name: string | null; action: string;
+      entity_type: string; entity_id: string | null; detail_json: string; created_at: string;
+    }>(
+      `SELECT a.id, a.actor_user_id, u.name AS actor_name, a.action, a.entity_type,
+              a.entity_id, a.detail_json, a.created_at
+         FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id
+        ORDER BY a.created_at DESC LIMIT 500`,
+    );
+    return json(200, {
+      events: events.rows.map((event) => ({
+        ...event,
+        detail: (() => { try { return JSON.parse(event.detail_json || "{}"); } catch { return {}; } })(),
+      })),
+    });
+  }
   }
   if (request.method === "POST" && route === "/suppressions") {
     const auth = await requireAdmin(request);
@@ -273,6 +300,7 @@ export async function handleApi(request: Request, path: string[]) {
     if (!validEmail(email)) return json(400, { error: "Enter a valid email address." });
     if (body.reason !== "manual") return json(400, { error: "Manual suppressions must use the manual reason." });
     await applySuppression(email, "manual", "application");
+    await recordAudit(auth.session.user_id, "suppression_created", "suppression", email, { reason: "manual" });
     return json(201, { suppression: { email, reason: "manual", source: "application" } });
   }
   if (request.method === "POST" && route === "/users") {
@@ -294,6 +322,7 @@ export async function handleApi(request: Request, path: string[]) {
        VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, NOW(), NOW())`,
       [id, email, name, role, hashPassword(body.password)],
     );
+    await recordAudit(auth.session.user_id, "user_created", "user", id, { email, role });
     return json(201, { user: userPayload({ id, email, name, role, active: true, must_change_password: true, created_at: new Date().toISOString() }, auth.session.user_id) });
   }
   const userMatch = route.match(/^\/users\/([^/]+)$/);
@@ -314,6 +343,7 @@ export async function handleApi(request: Request, path: string[]) {
     );
     if (!updated.rows[0]) return json(404, { error: "User not found." });
     await query(`DELETE FROM sessions WHERE user_id = $1`, [userMatch[1]]);
+    await recordAudit(auth.session.user_id, "user_access_updated", "user", userMatch[1], { email, role: body.role, active: body.active !== false });
     return json(200, { user: userPayload(updated.rows[0] as never, auth.session.user_id) });
   }
   const resetMatch = route.match(/^\/users\/([^/]+)\/reset-password$/);
@@ -326,6 +356,7 @@ export async function handleApi(request: Request, path: string[]) {
     const updated = await query(`UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = NOW() WHERE id = $2 RETURNING id`, [hashPassword(body.password), resetMatch[1]]);
     if (!updated.rows[0]) return json(404, { error: "User not found." });
     await query(`DELETE FROM sessions WHERE user_id = $1`, [resetMatch[1]]);
+    await recordAudit(auth.session.user_id, "user_password_reset", "user", resetMatch[1]);
     return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/contacts") {
