@@ -4,7 +4,7 @@ Next.js App Router runtime that preserves the existing `/api/*` SPA contract and
 **Vercel + managed PostgreSQL + Resend Broadcasts**.
 
 The Python test build under `../app` remains available for local comparison. This `web/`
-app is the production-oriented runtime.
+app is the production-oriented runtime. Project docs: [`../docs/`](../docs/).
 
 ## Prerequisites
 

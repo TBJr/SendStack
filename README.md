@@ -1,8 +1,17 @@
 # SendStack
 
-This repository contains a runnable, dependency-free test build of the email marketing platform described in the project documents. It is intentionally safe by default: messages are captured inside the application and no external email is sent.
+This repository contains a runnable, dependency-free test build of the SendStack email marketing platform, plus a production-oriented Next.js app under `web/`. It is intentionally safe by default: messages are captured inside the application and no external email is sent.
 
-The selected production target is now **Vercel + managed PostgreSQL + Resend Broadcasts**. That target is visible under **Sending setup** in the application. It is a migration target—not an active transport in this build.
+The selected production target is **Vercel + managed PostgreSQL + Resend Broadcasts**. That target is visible under **Sending setup** in the application. It is a migration target—not an active transport in the Python test build.
+
+## Documentation
+
+| Document | Purpose |
+| --- | --- |
+| [`docs/product.md`](docs/product.md) | Goals, roles, modules, and MVP boundaries |
+| [`docs/architecture.md`](docs/architecture.md) | Production and local stacks, delivery contract |
+| [`docs/deployment.md`](docs/deployment.md) | Vercel handover, launch gates, and env vars |
+| [`web/README.md`](web/README.md) | Next.js app setup and Vercel deploy checklist |
 
 ## Run it now (legacy Python test build)
 
@@ -91,7 +100,7 @@ Cloudflare may continue to host DNS and the authentication records for the sendi
 
 The intended operating range is **3,000–10,000 messages per day after a staged ramp**, not a guaranteed day-one send rate. Initial volume must use a small consented canary and increase only while bounce, complaint, and unsubscribe signals remain healthy.
 
-See [04_Deployment_Handover/VERCEL_RESEND_DEPLOYMENT.md](04_Deployment_Handover/VERCEL_RESEND_DEPLOYMENT.md) for the implementation gates and handover checklist.
+See [`docs/architecture.md`](docs/architecture.md) and [`docs/deployment.md`](docs/deployment.md) for the full contract, implementation sequence, and handover checklist.
 
 ## Optional controlled SMTP test
 
@@ -120,8 +129,6 @@ Data is stored under `./data` and survives restarts.
 
 ## Important boundary
 
-This is the immediate functional-test build, not the final production release. It uses SQLite, a persistent Python HTTP process, and one in-process worker. Those choices make local testing simple, but they are not compatible with a dependable Vercel production deployment.
+This is the immediate functional-test build, not the final production release. The Python path uses SQLite, a persistent HTTP process, and one in-process worker. Those choices make local testing simple, but they are not compatible with a dependable Vercel production deployment.
 
-This repository does **not** currently send through Resend and should not be presented as production-ready. Live delivery remains locked until the API runtime and data are migrated, the Resend provider adapter is implemented, the sending domain is verified, signed webhook processing is tested, suppression synchronization is proven, and backup/restore and administrator security controls are complete.
-
-Hetzner is no longer the selected production host. It can still run this local-style test server, but the chosen production path is Vercel + managed PostgreSQL + Resend. The optional SMTP mode remains only for tightly controlled allowlisted tests and is not the planned mass-delivery architecture.
+This repository does **not** currently send through Resend by default and should not be presented as production-ready until live delivery is unlocked. Live send remains locked until the Resend adapter path, verified domain, signed webhooks, suppression sync, backup/restore, and administrator security controls are complete. The optional SMTP mode remains only for tightly controlled allowlisted tests and is not the planned mass-delivery architecture.

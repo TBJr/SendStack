@@ -1,4 +1,6 @@
-# SendStack production handover: Vercel + PostgreSQL + Resend
+# Production handover: Vercel + PostgreSQL + Resend
+
+See also: [Architecture](architecture.md) · [Product](product.md) · [`web/README.md`](../web/README.md)
 
 ## Decision
 
@@ -10,7 +12,7 @@ SendStack's selected production architecture is:
 - **Audience model:** Resend Contacts assigned to Segments
 - **DNS:** Cloudflare may remain the DNS host for the application and sending-domain records
 
-The current runnable build is still a local test environment. It uses a persistent Python process, SQLite, and an in-process queue. It is safe for product testing but is not ready to deploy to Vercel or send through Resend.
+The Python test build under `app/` remains a local sandbox environment (SQLite, in-process queue). It is safe for product testing but is not ready to deploy to Vercel or send through Resend. Use `web/` for the Vercel path.
 
 ## Production delivery contract
 
@@ -64,7 +66,7 @@ Provider acceptance is **submitted**, not **delivered**. The UI must only show d
 
 ## Server-only production configuration
 
-The production implementation should consume these Vercel environment variables. They are intentionally not consumed by the current local server, so adding them today does not connect Resend.
+The production implementation should consume these Vercel environment variables. Preview deployments must remain in sandbox mode and must not receive production provider credentials.
 
 | Variable | Purpose |
 | --- | --- |
@@ -75,8 +77,6 @@ The production implementation should consume these Vercel environment variables.
 | `SENDSTACK_SESSION_SECRET` | Production session signing/encryption secret |
 | `SENDSTACK_FROM_EMAIL` | Verified production sender address |
 | `SENDSTACK_LIVE_SEND_ENABLED` | Explicit kill switch; default must be `false` |
-
-Preview deployments must remain in sandbox mode and must not receive production provider credentials.
 
 ## Launch gates
 
@@ -105,4 +105,3 @@ Start with a small, engaged, consented segment. Increase volume only when authen
 - **Queue:** Resend owns the live delivery queue; SendStack owns the campaign intent, recipient snapshot, safety gate, and audit trail.
 - **Deliveries:** local captures remain available for testing. Production delivery status comes from signed provider events.
 - **Unsubscribe:** the provider unsubscribe link is authoritative at send time and must synchronize back to SendStack's global suppression list.
-
