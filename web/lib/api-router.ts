@@ -11,6 +11,31 @@ const ADMIN_PERMISSIONS = [
   "deliveries.feedback", "suppressions.view", "suppressions.manage", "audit.view", "users.view", "users.manage",
 ];
 
+const ROLE_DEFINITIONS = [
+  { id: "admin", label: "Administrator", description: "Full system control, including access management and audit history.", permissions: ADMIN_PERMISSIONS },
+  { id: "marketer", label: "Marketer", description: "Manages audiences, campaigns, controlled sends, and suppressions.", permissions: ["overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view", "contacts.manage", "campaigns.view", "campaigns.manage", "campaigns.send", "deliveries.view", "suppressions.view", "suppressions.manage"] },
+  { id: "analyst", label: "Analyst", description: "Read-only campaign reporting without recipient-level personal data.", permissions: ["overview.view", "sending.view", "lists.view", "campaigns.view"] },
+];
+
+const PERMISSION_DEFINITIONS = [
+  ["overview.view", "Overview", "View operational totals and campaign reporting"],
+  ["sending.view", "Sending setup", "View production-readiness status"],
+  ["lists.view", "List reporting", "View list names and audience totals"],
+  ["lists.manage", "Manage lists", "Create audience lists"],
+  ["contacts.view", "Recipient data", "View contact identities and consent records"],
+  ["contacts.manage", "Manage contacts", "Create and import contacts"],
+  ["campaigns.view", "Campaign reporting", "View campaigns, content, and totals"],
+  ["campaigns.manage", "Manage campaigns", "Create and edit campaign drafts"],
+  ["campaigns.send", "Run campaigns", "Test and launch campaigns"],
+  ["deliveries.view", "Delivery records", "View message records"],
+  ["deliveries.feedback", "Delivery feedback", "Process delivery events"],
+  ["suppressions.view", "Suppression data", "View suppressed addresses"],
+  ["suppressions.manage", "Manage suppressions", "Add manual suppressions"],
+  ["audit.view", "Audit log", "View administrative activity"],
+  ["users.view", "User directory", "View users and roles"],
+  ["users.manage", "Manage access", "Create and update users"],
+].map(([id, label, description]) => ({ id, label, description }));
+
 function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -74,6 +99,24 @@ function sessionPayload(session: NonNullable<Awaited<ReturnType<typeof currentSe
 async function requireSession(request: Request) {
   const session = await currentSession(request);
   return session ? { session } : { response: json(401, { error: "Not signed in." }) };
+}
+
+async function requireAdmin(request: Request) {
+  const auth = await requireSession(request);
+  if (auth.response) return auth;
+  return auth.session.role === "admin"
+    ? auth
+    : { response: json(403, { error: "Administrator access is required." }) };
+}
+
+function userPayload(user: { id: string; email: string; name: string; role: string; active: boolean; must_change_password: boolean; created_at: string }, currentUserId: string) {
+  const role = ROLE_DEFINITIONS.find((definition) => definition.id === user.role) ?? ROLE_DEFINITIONS[2];
+  return {
+    ...user,
+    role_label: role.label,
+    is_current_user: user.id === currentUserId,
+    last_login_at: null,
+  };
 }
 
 async function summaryResponse() {
@@ -198,6 +241,72 @@ export async function handleApi(request: Request, path: string[]) {
         GROUP BY l.id ORDER BY l.name`,
     );
     return json(200, { lists: lists.rows });
+  }
+  if (request.method === "GET" && route === "/users") {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    const users = await query<{
+      id: string; email: string; name: string; role: string; active: boolean;
+      must_change_password: boolean; created_at: string;
+    }>(`SELECT id, email, name, role, active, must_change_password, created_at FROM users ORDER BY created_at`);
+    return json(200, {
+      users: users.rows.map((user) => userPayload(user, auth.session.user_id)),
+      roles: ROLE_DEFINITIONS,
+      permissions: PERMISSION_DEFINITIONS,
+    });
+  }
+  if (request.method === "POST" && route === "/users") {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const body = await request.json().catch(() => ({})) as { name?: string; email?: string; role?: string; password?: string };
+    const name = (body.name ?? "").trim();
+    const email = normalizeEmail(body.email ?? "");
+    const role = body.role ?? "marketer";
+    if (!name || !validEmail(email)) return json(400, { error: "Enter a name and valid email address." });
+    if (!ROLE_DEFINITIONS.some((definition) => definition.id === role)) return json(400, { error: "Select a valid role." });
+    if (!body.password || body.password.length < 12) return json(400, { error: "Password must be at least 12 characters." });
+    const existing = await query(`SELECT 1 FROM users WHERE email = $1`, [email]);
+    if (existing.rows[0]) return json(409, { error: "That email address already exists." });
+    const id = `usr_${randomBytes(16).toString("hex")}`;
+    await query(
+      `INSERT INTO users (id, email, name, role, password_hash, active, must_change_password, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, NOW(), NOW())`,
+      [id, email, name, role, hashPassword(body.password)],
+    );
+    return json(201, { user: userPayload({ id, email, name, role, active: true, must_change_password: true, created_at: new Date().toISOString() }, auth.session.user_id) });
+  }
+  const userMatch = route.match(/^\/users\/([^/]+)$/);
+  if (request.method === "PATCH" && userMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    if (userMatch[1] === auth.session.user_id) return json(400, { error: "Another administrator must change your own access." });
+    const body = await request.json().catch(() => ({})) as { name?: string; email?: string; role?: string; active?: boolean };
+    const name = (body.name ?? "").trim();
+    const email = normalizeEmail(body.email ?? "");
+    if (!name || !validEmail(email)) return json(400, { error: "Enter a name and valid email address." });
+    if (!ROLE_DEFINITIONS.some((definition) => definition.id === body.role)) return json(400, { error: "Select a valid role." });
+    const updated = await query(
+      `UPDATE users SET name = $1, email = $2, role = $3, active = $4, updated_at = NOW()
+       WHERE id = $5 RETURNING id, email, name, role, active, must_change_password, created_at`,
+      [name, email, body.role, body.active !== false, userMatch[1]],
+    );
+    if (!updated.rows[0]) return json(404, { error: "User not found." });
+    await query(`DELETE FROM sessions WHERE user_id = $1`, [userMatch[1]]);
+    return json(200, { user: userPayload(updated.rows[0] as never, auth.session.user_id) });
+  }
+  const resetMatch = route.match(/^\/users\/([^/]+)\/reset-password$/);
+  if (request.method === "POST" && resetMatch) {
+    const auth = await requireAdmin(request);
+    if (auth.response) return auth.response;
+    if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
+    const body = await request.json().catch(() => ({})) as { password?: string };
+    if (!body.password || body.password.length < 12) return json(400, { error: "Password must be at least 12 characters." });
+    const updated = await query(`UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = NOW() WHERE id = $2 RETURNING id`, [hashPassword(body.password), resetMatch[1]]);
+    if (!updated.rows[0]) return json(404, { error: "User not found." });
+    await query(`DELETE FROM sessions WHERE user_id = $1`, [resetMatch[1]]);
+    return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/contacts") {
     const auth = await requireSession(request);
