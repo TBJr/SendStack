@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { json } from "./http";
 import { config } from "./config";
 import { query } from "./db";
-import { normalizeEmail, verifyPassword } from "./ids";
+import { hashPassword, normalizeEmail, verifyPassword } from "./ids";
 
 const ADMIN_PERMISSIONS = [
   "overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view",
@@ -23,6 +23,10 @@ function cookieValue(request: Request, name: string): string | null {
 function cookieHeader(token: string, maxAge: number): string {
   const secure = config.cookieSecure ? "; Secure" : "";
   return `sendstack_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function hasValidCsrf(request: Request, csrfToken: string): boolean {
+  return request.headers.get("X-CSRF-Token") === csrfToken;
 }
 
 async function currentSession(request: Request) {
@@ -85,6 +89,32 @@ export async function handleApi(request: Request, path: string[]) {
   if (request.method === "GET" && route === "/session") {
     const session = await currentSession(request);
     return session ? json(200, sessionPayload(session)) : json(401, { error: "Not signed in." });
+  }
+  if (request.method === "POST" && route === "/auth/change-password") {
+    const session = await currentSession(request);
+    if (!session) return json(401, { error: "Not signed in." });
+    if (!hasValidCsrf(request, session.csrf_token)) {
+      return json(403, { error: "CSRF validation failed." });
+    }
+
+    const body = await request.json().catch(() => ({})) as {
+      current_password?: string;
+      new_password?: string;
+    };
+    if (!body.current_password || !verifyPassword(body.current_password, (await query<{ password_hash: string }>(
+      `SELECT password_hash FROM users WHERE id = $1`,
+      [session.user_id],
+    )).rows[0]?.password_hash ?? "")) {
+      return json(400, { error: "Current password is incorrect." });
+    }
+    if (!body.new_password || body.new_password.length < 12) {
+      return json(400, { error: "New password must be at least 12 characters." });
+    }
+    await query(
+      `UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = NOW() WHERE id = $2`,
+      [hashPassword(body.new_password), session.user_id],
+    );
+    return json(200, sessionPayload({ ...session, must_change_password: false }));
   }
   if (request.method === "POST" && route === "/auth/logout") {
     const token = cookieValue(request, "sendstack_session");
