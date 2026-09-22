@@ -3,6 +3,7 @@ import { json } from "./http";
 import { config } from "./config";
 import { query } from "./db";
 import { hashPassword, normalizeEmail, validEmail, verifyPassword } from "./ids";
+import { sendResendEmail } from "./providers/resend";
 
 const ADMIN_PERMISSIONS = [
   "overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view",
@@ -122,7 +123,11 @@ async function campaignById(id: string) {
 }
 
 function readinessResponse() {
-  const resendConfigured = Boolean(process.env.RESEND_API_KEY && process.env.RESEND_WEBHOOK_SECRET);
+  const resendConfigured = Boolean(
+    process.env.RESEND_API_KEY &&
+    process.env.RESEND_WEBHOOK_SECRET &&
+    process.env.SENDSTACK_FROM_EMAIL,
+  );
   const production = config.isVercelProduction || config.nodeEnv === "production";
   return json(200, {
     target: { platform: "Vercel", database: "Managed PostgreSQL", provider: "Resend Broadcasts" },
@@ -131,7 +136,7 @@ function readinessResponse() {
     checks: [
       { id: "vercel_runtime", label: "Vercel runtime", status: production ? "ready" : "pending", detail: production ? "Running in a production Vercel environment." : "Deploy the production project on Vercel." },
       { id: "postgres_database", label: "PostgreSQL database", status: config.databaseUrl ? "ready" : "migration_required", detail: config.databaseUrl ? "Managed PostgreSQL is configured." : "Set DATABASE_URL and run migrations." },
-      { id: "resend_broadcasts", label: "Resend delivery", status: resendConfigured ? "configured_locked" : "not_connected", detail: resendConfigured ? "Resend credentials are configured; provider sending remains locked until implemented." : "Set RESEND_API_KEY and RESEND_WEBHOOK_SECRET." },
+      { id: "resend_broadcasts", label: "Resend delivery", status: resendConfigured && config.liveSendEnabled ? "ready" : resendConfigured ? "configured_locked" : "not_connected", detail: resendConfigured && config.liveSendEnabled ? "Resend API delivery is enabled for this production runtime." : resendConfigured ? "Resend credentials are configured; set SENDSTACK_LIVE_SEND_ENABLED=true." : "Set RESEND_API_KEY, RESEND_WEBHOOK_SECRET, and SENDSTACK_FROM_EMAIL." },
     ],
     delivery_path: ["Create a campaign draft", "Verify the audience and suppressions", "Submit through the configured delivery provider"],
     volume_plan: { goal: `${Number(process.env.SENDSTACK_DAILY_LIMIT ?? 50).toLocaleString()} emails/day`, launch_policy: "Increase volume only after delivery and complaint signals remain healthy." },
@@ -292,9 +297,6 @@ export async function handleApi(request: Request, path: string[]) {
     if (!hasValidCsrf(request, auth.session.csrf_token)) return json(403, { error: "CSRF validation failed." });
     const campaign = await campaignById(campaignAction[1]);
     if (!campaign) return json(404, { error: "Campaign not found." });
-    if (config.deliveryMode === "resend") {
-      return json(503, { error: "Resend delivery is configured but the provider sender is not enabled in this runtime. Use sandbox or deploy the Resend provider." });
-    }
     const body = await request.json().catch(() => ({})) as { email?: string };
     const targetEmail = normalizeEmail(body.email ?? "");
     const contacts = campaignAction[2] === "test-send"
@@ -317,16 +319,32 @@ export async function handleApi(request: Request, path: string[]) {
       const recipientId = `rec_${randomBytes(16).toString("hex")}`;
       const messageId = `msg_${randomBytes(16).toString("hex")}`;
       const unsubscribeToken = randomBytes(24).toString("base64url");
+      const unsubscribeUrl = `${process.env.SENDSTACK_PUBLIC_URL ?? "http://localhost:3000"}/u/${unsubscribeToken}`;
+      const htmlBody = campaign.html_body.replaceAll("{{unsubscribe_url}}", unsubscribeUrl);
+      const textBody = campaign.text_body.replaceAll("{{unsubscribe_url}}", unsubscribeUrl);
+      const providerEmail = config.deliveryMode === "resend"
+        ? await sendResendEmail({
+            to: contact.email,
+            subject: campaign.subject,
+            html: htmlBody,
+            text: textBody,
+            fromName: campaign.from_name,
+            fromEmail: campaign.from_email,
+          })
+        : null;
       await query(
-        `INSERT INTO campaign_recipients (id, campaign_id, contact_id, email, status, message_id, queued_at)
-         VALUES ($1, $2, $3, $4, 'sent', $5, NOW()) ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
-        [recipientId, campaign.id, contact.id, contact.email, messageId],
+        `INSERT INTO campaign_recipients (id, campaign_id, contact_id, email, status, message_id, provider_email_id, queued_at, sent_at)
+         VALUES ($1, $2, $3, $4, 'sent', $5, $6, NOW(), NOW()) ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+        [recipientId, campaign.id, contact.id, contact.email, messageId, providerEmail?.id ?? null],
       );
       await query(
         `INSERT INTO messages (id, campaign_id, recipient_id, contact_id, to_email, subject, from_email, html_body, text_body, status, unsubscribe_token, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'captured', $10, NOW())`,
-        [messageId, campaign.id, recipientId, contact.id, contact.email, campaign.subject, campaign.from_email, campaign.html_body, campaign.text_body, unsubscribeToken],
+        [messageId, campaign.id, recipientId, contact.id, contact.email, campaign.subject, campaign.from_email, htmlBody, textBody, unsubscribeToken],
       );
+      if (providerEmail) {
+        await query(`UPDATE messages SET status = 'submitted', provider_id = $1 WHERE id = $2`, [providerEmail.id, messageId]);
+      }
     }
     await query(`UPDATE campaigns SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, [campaign.id]);
     return json(200, { queued: contacts.length, sent: contacts.length });
