@@ -14,20 +14,20 @@ const ADMIN_PERMISSIONS = [
 
 const ROLE_DEFINITIONS = [
   { id: "admin", label: "Administrator", description: "Full system control, including access management and audit history.", permissions: ADMIN_PERMISSIONS },
-  { id: "marketer", label: "Marketer", description: "Manages audiences, campaigns, controlled sends, and suppressions.", permissions: ["overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view", "contacts.manage", "campaigns.view", "campaigns.manage", "campaigns.send", "deliveries.view", "suppressions.view", "suppressions.manage"] },
+  { id: "marketer", label: "Marketer", description: "Manages audiences, campaigns, sends, and suppressions.", permissions: ["overview.view", "sending.view", "lists.view", "lists.manage", "contacts.view", "contacts.manage", "campaigns.view", "campaigns.manage", "campaigns.send", "deliveries.view", "suppressions.view", "suppressions.manage"] },
   { id: "analyst", label: "Analyst", description: "Read-only campaign reporting without recipient-level personal data.", permissions: ["overview.view", "sending.view", "lists.view", "campaigns.view"] },
 ];
 
 const PERMISSION_DEFINITIONS = [
   ["overview.view", "Overview", "View operational totals and campaign reporting"],
-  ["sending.view", "Sending setup", "View production-readiness status"],
+  ["sending.view", "Sending setup", "View delivery setup and go-live checklist"],
   ["lists.view", "List reporting", "View list names and audience totals"],
   ["lists.manage", "Manage lists", "Create audience lists"],
   ["contacts.view", "Recipient data", "View contact identities and consent records"],
   ["contacts.manage", "Manage contacts", "Create and import contacts"],
   ["campaigns.view", "Campaign reporting", "View campaigns, content, and totals"],
   ["campaigns.manage", "Manage campaigns", "Create and edit campaign drafts"],
-  ["campaigns.send", "Run campaigns", "Test and launch campaigns"],
+  ["campaigns.send", "Send campaigns", "Send previews and launch campaigns"],
   ["deliveries.view", "Delivery records", "View message records"],
   ["deliveries.feedback", "Delivery feedback", "Process delivery events"],
   ["suppressions.view", "Suppression data", "View suppressed addresses"],
@@ -217,12 +217,42 @@ function readinessResponse() {
     current: { runtime: "Vercel", database: config.databaseUrl ? "PostgreSQL" : "Not configured", transport: config.deliveryMode },
     ready_for_live_sending: production && config.deliveryMode === "resend" && config.liveSendEnabled && resendConfigured,
     checks: [
-      { id: "vercel_runtime", label: "Vercel runtime", status: production ? "ready" : "pending", detail: production ? "Running in a production Vercel environment." : "Deploy the production project on Vercel." },
-      { id: "postgres_database", label: "PostgreSQL database", status: config.databaseUrl ? "ready" : "migration_required", detail: config.databaseUrl ? "Managed PostgreSQL is configured." : "Set DATABASE_URL and run migrations." },
-      { id: "resend_broadcasts", label: "Resend delivery", status: resendConfigured && config.liveSendEnabled ? "ready" : resendConfigured ? "configured_locked" : "not_connected", detail: resendConfigured && config.liveSendEnabled ? "Resend API delivery is enabled for this production runtime." : resendConfigured ? "Resend credentials are configured; set SENDSTACK_LIVE_SEND_ENABLED=true." : "Set RESEND_API_KEY, RESEND_WEBHOOK_SECRET, and SENDSTACK_FROM_EMAIL." },
+      {
+        id: "vercel_runtime",
+        label: "Application runtime",
+        status: production ? "ready" : "pending",
+        detail: production
+          ? "The application is running in the production environment."
+          : "Deploy the application to the production host before enabling live email.",
+      },
+      {
+        id: "postgres_database",
+        label: "PostgreSQL database",
+        status: config.databaseUrl ? "ready" : "migration_required",
+        detail: config.databaseUrl
+          ? "The managed database is connected."
+          : "Connect the managed database and apply migrations.",
+      },
+      {
+        id: "resend_broadcasts",
+        label: "Resend delivery",
+        status: resendConfigured && config.liveSendEnabled ? "ready" : resendConfigured ? "configured_locked" : "not_connected",
+        detail: resendConfigured && config.liveSendEnabled
+          ? "Live email through Resend is enabled."
+          : resendConfigured
+            ? "Resend is configured. Live email is turned off until an administrator enables it."
+            : "Connect Resend and verify the sending address before live email can be enabled.",
+      },
     ],
-    delivery_path: ["Create a campaign draft", "Verify the audience and suppressions", "Submit through the configured delivery provider"],
-    volume_plan: { goal: `${Number(process.env.SENDSTACK_DAILY_LIMIT ?? 50).toLocaleString()} emails/day`, launch_policy: "Increase volume only after delivery and complaint signals remain healthy." },
+    delivery_path: [
+      "Create a campaign draft",
+      "Verify the audience and suppressions",
+      "Submit through the configured delivery provider",
+    ],
+    volume_plan: {
+      goal: `${Number(process.env.SENDSTACK_DAILY_LIMIT ?? 50).toLocaleString()} emails/day`,
+      launch_policy: "Increase volume only after delivery and complaint signals remain healthy.",
+    },
   });
 }
 

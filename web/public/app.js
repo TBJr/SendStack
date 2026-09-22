@@ -31,8 +31,8 @@ const viewMeta = {
   dashboard: ["Overview", "Operations"],
   contacts: ["Contacts", "Audience"],
   campaigns: ["Campaigns", "Delivery"],
-  sending: ["Sending setup", "Production readiness"],
-  deliveries: ["Deliveries", "Sandbox inbox"],
+  sending: ["Sending setup", "Delivery"],
+  deliveries: ["Deliveries", "Inbox"],
   suppressions: ["Suppressions", "Safety controls"],
   users: ["Users & roles", "Access control"],
   audit: ["Audit log", "Governance"],
@@ -62,7 +62,7 @@ const defaultTemplate = `<!doctype html>
           <tr><td style="padding:34px 30px">
             <p style="margin:0 0 14px;font-size:16px">Hello {{first_name}},</p>
             <h1 style="margin:0 0 16px;font-size:28px;line-height:1.2">A useful update, sent thoughtfully.</h1>
-            <p style="margin:0 0 22px;color:#53627a;line-height:1.65">Replace this text with the message you want your audience to receive. The test inbox will show the fully personalized result before external delivery is enabled.</p>
+            <p style="margin:0 0 22px;color:#53627a;line-height:1.65">Replace this text with the message you want your audience to receive. Preview shows the fully personalized result.</p>
             <a href="#" style="display:inline-block;background:#5b7cff;color:white;text-decoration:none;padding:12px 18px;border-radius:8px;font-weight:bold">Primary action</a>
           </td></tr>
           <tr><td style="padding:21px 30px;background:#f7f9fc;color:#718097;font-size:12px;line-height:1.6">You are receiving this because you opted in to updates.<br><a href="{{unsubscribe_url}}" style="color:#536fd9">Unsubscribe</a></td></tr>
@@ -78,7 +78,7 @@ const defaultVisualContent = {
   brand_name: "SendStack",
   preheader: "A useful update for our subscribers",
   headline: "A useful update, sent thoughtfully.",
-  body: "Replace this text with the message you want your audience to receive. The test inbox will show the fully personalized result before external delivery is enabled.",
+  body: "Replace this text with the message you want your audience to receive. Preview shows the fully personalized result.",
   cta_label: "Primary action",
   cta_url: "https://example.com",
   accent_color: "#5b7cff",
@@ -213,7 +213,29 @@ function titleCase(value) {
 
 function statusPill(status) {
   const safe = String(status || "unknown").toLowerCase();
-  return `<span class="status ${escapeHtml(safe)}">${escapeHtml(titleCase(safe))}</span>`;
+  const labels = {
+    sandboxed: "Captured",
+    submitted: "Submitted",
+    delivered: "Delivered",
+    bounced: "Bounced",
+    complained: "Complained",
+    suppressed: "Suppressed",
+    queued: "Queued",
+    sending: "Sending",
+    paused: "Paused",
+    completed: "Completed",
+    draft: "Draft",
+    failed: "Failed",
+    active: "Active",
+    inactive: "Inactive",
+  };
+  return `<span class="status ${escapeHtml(safe)}">${escapeHtml(labels[safe] || titleCase(safe))}</span>`;
+}
+
+function deliveryModeLabel(mode) {
+  if (mode === "resend") return "Resend";
+  if (mode === "smtp") return "Allowlisted SMTP";
+  return "Preview";
 }
 
 function initials(name) {
@@ -276,9 +298,7 @@ function showApp(sessionData) {
   document.querySelectorAll("[data-permission]").forEach((element) => {
     element.hidden = !can(element.dataset.permission);
   });
-  const smtp = sessionData.delivery_mode === "smtp";
-  const resend = sessionData.delivery_mode === "resend";
-  els.modePill.innerHTML = `<span></span> ${resend ? "Resend" : smtp ? "SMTP test" : "Sandbox"}`;
+  els.modePill.innerHTML = `<span></span> ${deliveryModeLabel(sessionData.delivery_mode)}`;
   if (sessionData.must_change_password || user?.must_change_password) {
     openChangePasswordModal(true);
     return;
@@ -397,7 +417,7 @@ async function renderDashboard() {
   els.content.innerHTML = `
     <section class="stat-grid" aria-label="Delivery overview">
       <article class="stat-card"><span class="stat-label">Active contacts</span><strong class="stat-value">${data.counts.contacts.toLocaleString()}</strong><span class="stat-detail">Ready for eligible campaigns</span></article>
-      <article class="stat-card" style="--stat-glow:rgba(80,212,194,.15)"><span class="stat-label">Captured today</span><strong class="stat-value">${data.counts.sent_today.toLocaleString()}</strong><span class="stat-detail"><strong>${remaining.toLocaleString()}</strong> left under the test cap</span></article>
+      <article class="stat-card" style="--stat-glow:rgba(80,212,194,.15)"><span class="stat-label">Sent today</span><strong class="stat-value">${data.counts.sent_today.toLocaleString()}</strong><span class="stat-detail"><strong>${remaining.toLocaleString()}</strong> remaining under today’s limit</span></article>
       <article class="stat-card" style="--stat-glow:rgba(243,182,90,.14)"><span class="stat-label">Queue</span><strong class="stat-value">${data.counts.queued.toLocaleString()}</strong><span class="stat-detail">Messages waiting or processing</span></article>
       <article class="stat-card" style="--stat-glow:rgba(255,111,125,.12)"><span class="stat-label">Suppressed</span><strong class="stat-value">${data.counts.suppressed.toLocaleString()}</strong><span class="stat-detail">Globally excluded before delivery</span></article>
     </section>
@@ -407,24 +427,25 @@ async function renderDashboard() {
         ${renderRecentCampaignTable(data.recent_campaigns)}
       </section>
       ${can("deliveries.view") ? `<section class="panel">
-        <div class="panel-head"><div><h2>Latest captures</h2><p>${escapeHtml(titleCase(data.delivery_mode))} delivery activity</p></div><button class="button small ghost" data-go="deliveries">Open inbox</button></div>
+        <div class="panel-head"><div><h2>Latest messages</h2><p>${escapeHtml(deliveryModeLabel(data.delivery_mode))} delivery activity</p></div><button class="button small ghost" data-go="deliveries">Open inbox</button></div>
         <div class="panel-body">${renderRecentMessages(data.recent_messages)}</div>
       </section>` : `<section class="panel access-summary"><div class="panel-body"><div class="access-lock">◌</div><h2>Recipient data is protected</h2><p>Your Analyst role includes aggregate campaign reporting without contact addresses or message contents.</p></div></section>`}
     </div>
     <section class="production-target-strip">
-      <div class="target-strip-copy"><span class="readiness-status pending">Migration required</span><div><strong>Production target: Vercel + PostgreSQL + Resend</strong><p>The architecture is selected, but live delivery is not connected to this local build yet.</p></div></div>
-      <button class="button" data-go="sending">View readiness</button>
+      <div class="target-strip-copy"><span class="readiness-status pending">Live email off</span><div><strong>Live email is not enabled yet</strong><p>Preview delivery keeps messages inside SendStack. Complete Sending setup before reaching customers.</p></div></div>
+      <button class="button" data-go="sending">View sending setup</button>
     </section>
-    <div class="notice" style="margin-top:16px"><span>i</span><div><strong>${data.delivery_mode === "sandbox" ? "Sandbox delivery is active." : "SMTP test delivery is active."}</strong> ${data.delivery_mode === "sandbox" ? "No message leaves this application; every send is captured in Deliveries." : "Only explicitly allowlisted recipients can receive messages."}</div></div>`;
+    <div class="notice" style="margin-top:16px"><span>i</span><div><strong>${data.delivery_mode === "sandbox" ? "Preview delivery is active." : data.delivery_mode === "resend" ? "Resend delivery is active." : "Allowlisted SMTP delivery is active."}</strong> ${data.delivery_mode === "sandbox" ? "No message leaves SendStack; every send is recorded under Deliveries." : data.delivery_mode === "resend" ? "Messages are submitted through Resend. Delivery status updates from verified provider events." : "Only explicitly allowlisted recipients can receive messages."}</div></div>`;
 }
 
 function readinessStatusLabel(status) {
   const labels = {
     ready: "Ready",
-    migration_required: "Migration required",
+    pending: "Pending",
+    migration_required: "Setup needed",
     not_connected: "Not connected",
     not_verified: "Not verified",
-    configured_locked: "Configured (locked)",
+    configured_locked: "Configured (live off)",
     configured: "Configured",
   };
   return labels[status] || titleCase(status);
@@ -445,15 +466,15 @@ async function renderSendingSetup() {
   els.content.innerHTML = `
     <section class="production-hero">
       <div>
-        <span class="readiness-status ${liveReady ? "ready" : "pending"}">${liveReady ? "Live sending unlocked" : "Live sending locked"}</span>
-        <p class="eyebrow">SELECTED PRODUCTION ARCHITECTURE</p>
+        <span class="readiness-status ${liveReady ? "ready" : "pending"}">${liveReady ? "Live email on" : "Live email off"}</span>
+        <p class="eyebrow">DELIVERY ARCHITECTURE</p>
         <h2>${escapeHtml(target.platform)} + ${escapeHtml(target.database)} + ${escapeHtml(target.provider)}</h2>
-        <p>Current runtime: ${escapeHtml(data.current.runtime)}. Database: ${escapeHtml(data.current.database)}. Transport: ${escapeHtml(data.current.transport)}.</p>
+        <p>Current runtime: ${escapeHtml(data.current.runtime)}. Database: ${escapeHtml(data.current.database)}. Transport: ${escapeHtml(deliveryModeLabel(data.current.transport))}.</p>
       </div>
-      <div class="readiness-score"><strong>${readyCount}/${data.checks.length}</strong><span>readiness gates complete</span></div>
+      <div class="readiness-score"><strong>${readyCount}/${data.checks.length}</strong><span>setup checks complete</span></div>
     </section>
 
-    <section class="target-grid" aria-label="Production architecture">
+    <section class="target-grid" aria-label="Delivery architecture">
       <article class="target-card"><span class="target-card-index">01</span><h3>Vercel</h3><p>${escapeHtml(vercel.detail)}</p><span class="readiness-status ${vercel.status === "ready" ? "ready" : "pending"}">${escapeHtml(readinessStatusLabel(vercel.status))}</span></article>
       <article class="target-card"><span class="target-card-index">02</span><h3>PostgreSQL</h3><p>${escapeHtml(postgres.detail)}</p><span class="readiness-status ${postgres.status === "ready" ? "ready" : "pending"}">${escapeHtml(readinessStatusLabel(postgres.status))}</span></article>
       <article class="target-card"><span class="target-card-index">03</span><h3>Resend Broadcasts</h3><p>${escapeHtml(resend.detail)}</p><span class="readiness-status ${resend.status === "ready" ? "ready" : "pending"}">${escapeHtml(readinessStatusLabel(resend.status))}</span></article>
@@ -461,7 +482,7 @@ async function renderSendingSetup() {
 
     <div class="readiness-layout">
       <section class="panel">
-        <div class="panel-head"><div><h2>Launch gates</h2><p>Every item must be verified before live sending is unlocked</p></div><span class="readiness-status ${liveReady ? "ready" : "locked"}">${liveReady ? "Live ready" : "Sandbox only"}</span></div>
+        <div class="panel-head"><div><h2>Go-live checklist</h2><p>Every item must be verified before live email reaches customers</p></div><span class="readiness-status ${liveReady ? "ready" : "locked"}">${liveReady ? "Live ready" : "Preview only"}</span></div>
         <div class="readiness-list">${data.checks.map((check) => `
           <div class="readiness-item">
             <span class="readiness-marker ${escapeHtml(check.status)}">${check.status === "ready" ? "✓" : ""}</span>
@@ -472,17 +493,17 @@ async function renderSendingSetup() {
 
       <div class="readiness-side">
         <section class="panel">
-          <div class="panel-head"><div><h2>Production delivery path</h2><p>Resend owns the live queue after handoff</p></div></div>
+          <div class="panel-head"><div><h2>Delivery path</h2><p>How a campaign reaches the provider</p></div></div>
           <ol class="delivery-path">${data.delivery_path.map((step, index) => `<li><span>${index + 1}</span><p>${escapeHtml(step)}</p></li>`).join("")}</ol>
         </section>
         <section class="panel volume-plan">
-          <div class="panel-head"><div><h2>Volume goal</h2><p>Target, not an automatic day-one guarantee</p></div></div>
+          <div class="panel-head"><div><h2>Volume goal</h2><p>Operating target after a careful ramp</p></div></div>
           <div class="panel-body"><strong class="volume-goal">${escapeHtml(data.volume_plan.goal)}</strong><p>${escapeHtml(data.volume_plan.launch_policy)}</p><div class="notice warning"><span>!</span><div>Bounce, complaint, and unsubscribe signals must remain healthy before volume increases.</div></div></div>
         </section>
       </div>
     </div>
 
-    <div class="notice setup-note"><span>i</span><div><strong>Cloudflare can stay in the stack for DNS and domain records.</strong> Vercel supplies the application runtime; Resend supplies email delivery. Cloudflare is not replacing either of those services.</div></div>`;
+    <div class="notice setup-note"><span>i</span><div><strong>DNS can remain with your existing provider.</strong> Vercel runs the application; Resend handles email delivery. DNS hosting does not replace either service.</div></div>`;
 }
 
 function renderRecentCampaignTable(campaigns) {
@@ -496,7 +517,7 @@ function renderRecentCampaignTable(campaigns) {
 }
 
 function renderRecentMessages(messages) {
-  if (!messages.length) return `<div class="empty-state" style="min-height:180px;padding:20px"><div><p>Messages will appear here after a test send or campaign launch.</p></div></div>`;
+  if (!messages.length) return `<div class="empty-state" style="min-height:180px;padding:20px"><div><p>Messages will appear here after a preview send or campaign launch.</p></div></div>`;
   return `<div class="activity-list">${messages.map((message) => `<div class="activity-item"><div class="activity-icon">↗</div><div><strong>${escapeHtml(message.to_email)}</strong><p>${escapeHtml(message.subject)} · ${formatDate(message.created_at)}</p></div></div>`).join("")}</div>`;
 }
 
@@ -509,7 +530,7 @@ async function renderContacts(query = "") {
     <div class="section-lead"><div><h2>${data.contacts.length.toLocaleString()} contacts</h2><p>Consent-aware audience records across ${lists.length} list${lists.length === 1 ? "" : "s"}.</p></div>${can("contacts.manage") ? `<div class="section-actions"><button class="button" id="import-contacts">Import CSV</button><button class="button primary" id="add-contact">Add contact</button></div>` : ""}</div>
     <div class="toolbar"><div class="search"><input id="contact-search" type="search" placeholder="Search email or name" value="${escapeHtml(query)}" /></div>${can("lists.manage") ? `<div class="toolbar-group"><button class="button small ghost" id="create-list">+ New list</button></div>` : ""}</div>
     <section class="panel">
-      ${data.contacts.length ? `<div class="table-wrap"><table><thead><tr><th>Contact</th><th>Lists</th><th>Consent</th><th>Status</th><th>Added</th></tr></thead><tbody>${data.contacts.map((contact) => `<tr><td><strong>${escapeHtml([contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Unnamed contact")}</strong><span class="subtext email">${escapeHtml(contact.email)}</span></td><td>${escapeHtml(contact.lists || "—")}</td><td>${escapeHtml(titleCase(contact.consent_source))}</td><td>${statusPill(contact.status)}</td><td>${formatDate(contact.created_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><div class="empty-mark">◎</div><h2>No contacts found</h2><p>Import a consented audience or add a test contact.</p>${can("contacts.manage") ? `<button class="button primary" id="empty-add-contact">Add contact</button>` : ""}</div></div>`}
+      ${data.contacts.length ? `<div class="table-wrap"><table><thead><tr><th>Contact</th><th>Lists</th><th>Consent</th><th>Status</th><th>Added</th></tr></thead><tbody>${data.contacts.map((contact) => `<tr><td><strong>${escapeHtml([contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Unnamed contact")}</strong><span class="subtext email">${escapeHtml(contact.email)}</span></td><td>${escapeHtml(contact.lists || "—")}</td><td>${escapeHtml(titleCase(contact.consent_source))}</td><td>${statusPill(contact.status)}</td><td>${formatDate(contact.created_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><div class="empty-mark">◎</div><h2>No contacts found</h2><p>Import a consented audience or add a contact.</p>${can("contacts.manage") ? `<button class="button primary" id="empty-add-contact">Add contact</button>` : ""}</div></div>`}
     </section>`;
   const search = document.querySelector("#contact-search");
   let searchTimer;
@@ -534,7 +555,7 @@ async function openContactModal() {
       <div class="form-grid"><label>First name<input name="first_name" maxlength="120" /></label><label>Last name<input name="last_name" maxlength="120" /></label></div>
       <label>Email address<input name="email" type="email" required /></label>
       <label>List<select name="list_id" required>${listOptions(lists)}</select></label>
-      <label>Consent source<input name="consent_source" value="manual_test_entry" maxlength="120" required /><span class="help">Use only consented or synthetic addresses.</span></label>
+      <label>Consent source<input name="consent_source" value="manual_entry" maxlength="120" required /><span class="help">Use only permission-based contacts with documented consent.</span></label>
       <p class="form-error" role="alert"></p>
       <div class="form-actions"><button type="button" class="button" data-close-modal>Cancel</button><button class="button primary" type="submit">Add contact</button></div>
     </form>`, true);
@@ -569,7 +590,7 @@ async function openImportModal() {
   const lists = await getLists();
   openModal("Import contacts", "CSV audience", `
     <form id="import-form" class="stack">
-      <div class="notice"><span>i</span><div>The CSV must include an <strong>email</strong> column. Optional fields: <strong>first_name</strong> and <strong>last_name</strong>. Use only permission-based or synthetic data.</div></div>
+      <div class="notice"><span>i</span><div>The CSV must include an <strong>email</strong> column. Optional fields: <strong>first_name</strong> and <strong>last_name</strong>. Import only permission-based contacts.</div></div>
       <label>Destination list<select name="list_id" required>${listOptions(lists)}</select></label>
       <label>CSV file<input name="file" type="file" accept=".csv,text/csv" required /></label>
       <p class="form-error" role="alert"></p>
@@ -599,8 +620,8 @@ async function renderCampaigns() {
   const data = await api("/api/campaigns");
   await getLists();
   els.content.innerHTML = `
-    <div class="section-lead"><div><h2>${data.campaigns.length} campaign${data.campaigns.length === 1 ? "" : "s"}</h2><p>${can("campaigns.send") ? "Draft, preview, and run each audience in the sandbox. Live Resend delivery remains locked." : "Read-only campaign reporting without recipient-level personal data."}</p></div>${can("campaigns.manage") ? `<button class="button primary" data-new-campaign>New campaign</button>` : ""}</div>
-    ${data.campaigns.length ? `<section class="campaign-grid">${data.campaigns.map(renderCampaignCard).join("")}</section>` : `<section class="panel empty-state"><div><div class="empty-mark">✦</div><h2>No campaigns yet</h2><p>${can("campaigns.manage") ? "Build a message, preview personalization, and capture a sandbox delivery." : "Campaign reports will appear here after a marketer creates a campaign."}</p>${can("campaigns.manage") ? `<button class="button primary" data-new-campaign>New campaign</button>` : ""}</div></section>`}`;
+    <div class="section-lead"><div><h2>${data.campaigns.length} campaign${data.campaigns.length === 1 ? "" : "s"}</h2><p>${can("campaigns.send") ? "Draft, preview, and send to each audience. Live email stays off until Sending setup is complete." : "Read-only campaign reporting without recipient-level personal data."}</p></div>${can("campaigns.manage") ? `<button class="button primary" data-new-campaign>New campaign</button>` : ""}</div>
+    ${data.campaigns.length ? `<section class="campaign-grid">${data.campaigns.map(renderCampaignCard).join("")}</section>` : `<section class="panel empty-state"><div><div class="empty-mark">✦</div><h2>No campaigns yet</h2><p>${can("campaigns.manage") ? "Build a message, preview personalization, and send a preview delivery." : "Campaign reports will appear here after a marketer creates a campaign."}</p>${can("campaigns.manage") ? `<button class="button primary" data-new-campaign>New campaign</button>` : ""}</div></section>`}`;
 }
 
 function renderCampaignCard(campaign) {
@@ -618,9 +639,9 @@ function renderCampaignCard(campaign) {
     <div class="campaign-card-actions">
       <button class="button small" data-action="view" data-id="${escapeHtml(campaign.id)}">Details</button>
       ${editable ? `<button class="button small ghost" data-action="edit" data-id="${escapeHtml(campaign.id)}">Edit</button>` : ""}
-      ${can("campaigns.send") ? `<button class="button small ghost" data-action="test" data-id="${escapeHtml(campaign.id)}">Test</button>` : ""}
+      ${can("campaigns.send") ? `<button class="button small ghost" data-action="test" data-id="${escapeHtml(campaign.id)}">Preview</button>` : ""}
       ${can("campaigns.send") && campaign.status === "sending" ? `<button class="button small" data-action="pause" data-id="${escapeHtml(campaign.id)}">Pause</button>` : ""}
-      ${launchable ? `<button class="button small primary" data-action="${campaign.status === "paused" ? "resume" : "launch"}" data-id="${escapeHtml(campaign.id)}">${campaign.status === "paused" ? "Resume test" : (state.session?.delivery_mode === "sandbox" ? "Run in sandbox" : "Run controlled test")}</button>` : ""}
+      ${launchable ? `<button class="button small primary" data-action="${campaign.status === "paused" ? "resume" : "launch"}" data-id="${escapeHtml(campaign.id)}">${campaign.status === "paused" ? "Resume send" : (state.session?.delivery_mode === "sandbox" ? "Send preview" : "Send to audience")}</button>` : ""}
     </div>
   </article>`;
 }
@@ -791,12 +812,12 @@ async function openCampaignDetails(campaignId) {
 }
 
 async function openTestSend(campaignId) {
-  openModal("Send a test", "Preflight", `
-    <form id="test-send-form" class="stack"><div class="notice"><span>i</span><div>${state.session.delivery_mode === "sandbox" ? "This will be captured inside the sandbox inbox. No external email is sent." : "SMTP mode is enabled. The address must be in the server-side recipient allowlist."}</div></div><label>Test recipient<input name="email" type="email" value="owner@example.test" required /></label><p class="form-error" role="alert"></p><div class="form-actions"><button type="button" class="button" data-close-modal>Cancel</button><button class="button primary" type="submit">Send test</button></div></form>`, true);
+  openModal("Send a preview", "Before you send", `
+    <form id="test-send-form" class="stack"><div class="notice"><span>i</span><div>${state.session.delivery_mode === "sandbox" ? "This message stays in SendStack. No external email is sent." : state.session.delivery_mode === "resend" ? "This sends a live test through Resend to the address you enter." : "Allowlisted SMTP is enabled. The address must be on the recipient allowlist."}</div></div><label>Preview recipient<input name="email" type="email" value="owner@example.test" required /></label><p class="form-error" role="alert"></p><div class="form-actions"><button type="button" class="button" data-close-modal>Cancel</button><button class="button primary" type="submit">Send preview</button></div></form>`, true);
   const form = document.querySelector("#test-send-form");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await submitForm(form, () => api(`/api/campaigns/${campaignId}/test-send`, { method: "POST", body: { email: form.elements.email.value } }), "Test message captured");
+    await submitForm(form, () => api(`/api/campaigns/${campaignId}/test-send`, { method: "POST", body: { email: form.elements.email.value } }), "Preview message recorded");
     if (!form.querySelector(".form-error").textContent) {
       closeModal();
       navigate("deliveries");
@@ -809,14 +830,14 @@ async function campaignAction(action, id) {
   if (action === "edit") return openCampaignComposer(id);
   if (action === "test") return openTestSend(id);
   if (action === "launch") {
-    openModal(state.session.delivery_mode === "sandbox" ? "Run campaign in sandbox?" : "Launch controlled test?", "Delivery preflight", `
+    openModal(state.session.delivery_mode === "sandbox" ? "Send campaign preview?" : "Send campaign to audience?", "Before you send", `
       <div class="stack">
-        <div class="notice ${state.session.delivery_mode === "smtp" ? "warning" : ""}"><span>!</span><div><strong>${state.session.delivery_mode === "sandbox" ? "Messages will stay inside the sandbox." : "Messages will be submitted to the configured SMTP test relay."}</strong><br>Eligibility and global suppression are checked again before every recipient is processed.</div></div>
-        <div class="metric-line"><span>Transport</span><strong>${escapeHtml(titleCase(state.session.delivery_mode))}</strong></div>
-        <div class="metric-line"><span>Daily safety cap</span><strong>${Number(state.session.daily_limit).toLocaleString()}</strong></div>
-        <div class="metric-line"><span>Production provider</span><strong>Resend — not connected</strong></div>
-        <p class="help">Production campaigns will use Resend Broadcasts after Vercel, PostgreSQL, the sending domain, and signed webhooks are verified.</p>
-        <div class="form-actions"><button class="button" data-close-modal>Cancel</button><button class="button primary" id="confirm-launch">${state.session.delivery_mode === "sandbox" ? "Queue sandbox run" : "Queue controlled test"}</button></div>
+        <div class="notice ${state.session.delivery_mode === "smtp" ? "warning" : ""}"><span>!</span><div><strong>${state.session.delivery_mode === "sandbox" ? "Messages will stay inside SendStack." : state.session.delivery_mode === "resend" ? "Messages will be submitted through Resend." : "Messages will be submitted to the configured allowlisted SMTP relay."}</strong><br>Eligibility and global suppression are checked again before every recipient is processed.</div></div>
+        <div class="metric-line"><span>Transport</span><strong>${escapeHtml(deliveryModeLabel(state.session.delivery_mode))}</strong></div>
+        <div class="metric-line"><span>Daily send limit</span><strong>${Number(state.session.daily_limit).toLocaleString()}</strong></div>
+        <div class="metric-line"><span>Live email</span><strong>${state.session.delivery_mode === "resend" ? "On" : "Off — preview or allowlisted only"}</strong></div>
+        <p class="help">Live customer delivery uses Resend once Sending setup is complete and live email is enabled.</p>
+        <div class="form-actions"><button class="button" data-close-modal>Cancel</button><button class="button primary" id="confirm-launch">${state.session.delivery_mode === "sandbox" ? "Start preview send" : "Start send"}</button></div>
       </div>`, true);
     document.querySelector("#confirm-launch").addEventListener("click", async () => {
       closeModal();
@@ -842,16 +863,16 @@ async function renderDeliveries() {
   const data = await api(`/api/messages${suffix}`);
   els.content.innerHTML = `
     <div class="section-lead"><div><h2>${data.messages.length} captured message${data.messages.length === 1 ? "" : "s"}</h2><p>Inspect rendered content and simulate recipient feedback.</p></div><div class="section-actions">${state.deliveryCampaign ? `<button class="button" id="clear-delivery-filter">Clear campaign filter</button>` : ""}</div></div>
-    <div class="notice" style="margin-bottom:15px"><span>i</span><div><strong>Delivery status is intentionally precise.</strong> “Sandboxed” means captured locally; “submitted” means accepted by the configured relay, not necessarily delivered to an inbox.</div></div>
+    <div class="notice" style="margin-bottom:15px"><span>i</span><div><strong>Delivery status is precise by design.</strong> “Captured” means recorded in SendStack without external delivery; “submitted” means accepted by the provider, not necessarily delivered to an inbox.</div></div>
     <section class="panel">${data.messages.length ? `<div class="table-wrap"><table><thead><tr><th>Recipient</th><th>Message</th><th>Campaign</th><th>Status</th><th>Time</th><th></th></tr></thead><tbody>${data.messages.map((message) => `<tr><td class="email">${escapeHtml(message.to_email)}</td><td><strong>${escapeHtml(message.subject)}</strong><span class="subtext">From ${escapeHtml(message.from_email)}</span></td><td>${escapeHtml(message.campaign_name || "Test send")}</td><td>${statusPill(message.status)}</td><td>${formatDate(message.created_at)}</td><td><button class="button small ghost" data-message-id="${escapeHtml(message.id)}">View</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><div class="empty-mark">↗</div><h2>The inbox is empty</h2><p>Create a campaign and send a test to inspect the rendered result.</p><button class="button primary" data-new-campaign>Create campaign</button></div></div>`}</section>`;
   document.querySelector("#clear-delivery-filter")?.addEventListener("click", () => { state.deliveryCampaign = null; renderDeliveries(); });
 }
 
 async function openMessage(messageId) {
   const { message } = await api(`/api/messages/${messageId}`);
-  openModal(message.subject, "Captured message", `
+  openModal(message.subject, "Message", `
     <dl class="message-meta"><dt>To</dt><dd>${escapeHtml(message.to_email)}</dd><dt>From</dt><dd>${escapeHtml(message.from_email)}</dd><dt>Status</dt><dd>${statusPill(message.status)}</dd><dt>Captured</dt><dd>${formatDate(message.created_at)}</dd></dl>
-    <div class="message-preview"><iframe title="Captured email" sandbox=""></iframe></div>
+    <div class="message-preview"><iframe title="Message preview" sandbox=""></iframe></div>
     <div class="form-actions" style="margin-top:16px"><button class="button" data-close-modal>Close</button>${can("deliveries.feedback") ? `<a class="button" href="/u/${encodeURIComponent(message.unsubscribe_token)}" target="_blank" rel="noopener">Test unsubscribe</a><button class="button danger" data-feedback="hard_bounce">Simulate hard bounce</button><button class="button danger" data-feedback="complaint">Simulate complaint</button>` : ""}</div>`, false);
   const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`;
   document.querySelector(".message-preview iframe").srcdoc = policy + message.html_body;

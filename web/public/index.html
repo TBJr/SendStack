@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="SendStack email campaign testing and production-readiness workspace" />
+    <meta name="description" content="SendStack — permission-based email campaigns, audiences, and delivery controls" />
     <title>SendStack</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
@@ -26,16 +26,16 @@
       <main class="login-panel">
         <div class="login-card">
           <div class="brand brand-login"><span class="brand-mark">S</span><span>SendStack</span></div>
-          <p class="eyebrow">TEST ENVIRONMENT</p>
+          <p class="eyebrow">Preview mode</p>
           <h1>Campaign operations,<br />without the guesswork.</h1>
-          <p class="login-copy">Sign in to test contacts, campaigns, sandbox delivery, suppressions, and reporting.</p>
+          <p class="login-copy">Sign in to manage contacts, campaigns, delivery, suppressions, and reporting.</p>
           <form id="login-form" class="stack" autocomplete="on">
             <label>Email address<input id="login-email" name="email" type="email" autocomplete="username" placeholder="you@example.com" required /></label>
             <label>Password<input id="login-password" name="password" type="password" autocomplete="current-password" required /></label>
             <p id="login-error" class="form-error" role="alert"></p>
             <button class="button primary full" type="submit">Sign in</button>
           </form>
-          <p class="login-hint">The default credentials are for local testing only.</p>
+          <p class="login-hint">Change the default password after your first sign-in.</p>
         </div>
       </main>
     </div>
@@ -43,7 +43,7 @@
     <div id="app-shell" class="app-shell" hidden>
       <aside class="sidebar">
         <div class="brand"><span class="brand-mark">S</span><span>SendStack</span></div>
-        <div id="mode-pill" class="mode-pill"><span></span> Sandbox</div>
+        <div id="mode-pill" class="mode-pill"><span></span> Preview</div>
         <nav id="main-nav" aria-label="Primary navigation">
           <button data-view="dashboard" class="nav-item active"><span class="nav-icon">⌂</span>Overview</button>
           <button data-view="contacts" data-permission="contacts.view" class="nav-item"><span class="nav-icon">◎</span>Contacts</button>
@@ -57,7 +57,7 @@
         <div class="sidebar-foot">
           <div class="user-chip">
             <span id="user-initials" class="avatar">TA</span>
-            <div><strong id="user-name">Test Administrator</strong><span id="user-role">Administrator</span></div>
+            <div><strong id="user-name">Administrator</strong><span id="user-role">Administrator</span></div>
           </div>
           <button id="logout-button" class="text-button">Sign out</button>
         </div>
