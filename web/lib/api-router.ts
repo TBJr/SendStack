@@ -62,6 +62,52 @@ function sessionPayload(session: NonNullable<Awaited<ReturnType<typeof currentSe
   };
 }
 
+async function requireSession(request: Request) {
+  const session = await currentSession(request);
+  return session ? { session } : { response: json(401, { error: "Not signed in." }) };
+}
+
+async function summaryResponse() {
+  const counts = await query<{
+    contacts: string;
+    suppressed: string;
+    queued: string;
+    sent_today: string;
+  }>(`SELECT
+      (SELECT COUNT(*) FROM contacts WHERE status = 'active') AS contacts,
+      (SELECT COUNT(*) FROM suppressions) AS suppressed,
+      (SELECT COUNT(*) FROM campaign_recipients WHERE status IN ('queued', 'processing')) AS queued,
+      (SELECT COUNT(*) FROM messages WHERE created_at >= CURRENT_DATE) AS sent_today`);
+  const recentCampaigns = await query(
+    `SELECT c.id, c.name, c.subject, c.status,
+            COUNT(cr.id)::int AS recipients,
+            COUNT(cr.id) FILTER (WHERE cr.status = 'sent')::int AS sent,
+            COUNT(cr.id) FILTER (WHERE cr.status IN ('failed', 'bounced', 'complained'))::int AS issues
+       FROM campaigns c
+       LEFT JOIN campaign_recipients cr ON cr.campaign_id = c.id
+      GROUP BY c.id
+      ORDER BY c.created_at DESC
+      LIMIT 8`,
+  );
+  const recentMessages = await query(
+    `SELECT id, to_email, subject, status, created_at
+       FROM messages ORDER BY created_at DESC LIMIT 8`,
+  );
+  const row = counts.rows[0];
+  return json(200, {
+    delivery_mode: config.deliveryMode,
+    daily_limit: Number(process.env.SENDSTACK_DAILY_LIMIT ?? 50),
+    counts: {
+      contacts: Number(row?.contacts ?? 0),
+      suppressed: Number(row?.suppressed ?? 0),
+      queued: Number(row?.queued ?? 0),
+      sent_today: Number(row?.sent_today ?? 0),
+    },
+    recent_campaigns: recentCampaigns.rows,
+    recent_messages: recentMessages.rows,
+  });
+}
+
 export async function handleApi(request: Request, path: string[]) {
   const route = `/${path.join("/")}`;
   if (request.method === "POST" && route === "/auth/login") {
@@ -89,6 +135,37 @@ export async function handleApi(request: Request, path: string[]) {
   if (request.method === "GET" && route === "/session") {
     const session = await currentSession(request);
     return session ? json(200, sessionPayload(session)) : json(401, { error: "Not signed in." });
+  }
+  if (request.method === "GET" && route === "/summary") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    return summaryResponse();
+  }
+  if (request.method === "GET" && route === "/lists") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    const lists = await query(
+      `SELECT l.id, l.name, l.description, l.created_at, COUNT(lc.contact_id)::int AS contact_count
+         FROM lists l LEFT JOIN list_contacts lc ON lc.list_id = l.id
+        GROUP BY l.id ORDER BY l.name`,
+    );
+    return json(200, { lists: lists.rows });
+  }
+  if (request.method === "GET" && route === "/contacts") {
+    const auth = await requireSession(request);
+    if (auth.response) return auth.response;
+    const search = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+    const contacts = await query(
+      `SELECT c.id, c.email, c.first_name, c.last_name, c.status, c.consent_source,
+              c.created_at, STRING_AGG(l.name, ', ' ORDER BY l.name) AS lists
+         FROM contacts c
+         LEFT JOIN list_contacts lc ON lc.contact_id = c.id
+         LEFT JOIN lists l ON l.id = lc.list_id
+        WHERE ($1 = '' OR c.email ILIKE '%' || $1 || '%' OR c.first_name ILIKE '%' || $1 || '%' OR c.last_name ILIKE '%' || $1 || '%')
+        GROUP BY c.id ORDER BY c.created_at DESC LIMIT 500`,
+      [search],
+    );
+    return json(200, { contacts: contacts.rows });
   }
   if (request.method === "POST" && route === "/auth/change-password") {
     const session = await currentSession(request);
