@@ -4,7 +4,7 @@ This repository contains a runnable, dependency-free test build of the email mar
 
 The selected production target is now **Vercel + managed PostgreSQL + Resend Broadcasts**. That target is visible under **Sending setup** in the application. It is a migration target—not an active transport in this build.
 
-## Run it now
+## Run it now (legacy Python test build)
 
 Requirements: Python 3.11 or newer.
 
@@ -18,6 +18,23 @@ Open <http://localhost:8080> and sign in with:
 - Password: `ChangeMe123!`
 
 The test build starts with three synthetic contacts on the reserved `.test` domain.
+
+## Vercel app (`web/`)
+
+The production-oriented runtime lives in [`web/`](web/). It is a Next.js App Router app that keeps the same SPA and `/api/*` contract, uses PostgreSQL, and processes sandbox campaigns without a long-lived worker.
+
+```bash
+cd web
+cp .env.example .env.local
+pnpm install
+pnpm db:migrate
+pnpm db:seed
+pnpm dev
+```
+
+Open <http://localhost:3000>. See [`web/README.md`](web/README.md) for the Vercel Root Directory (`web`), production checklist, Resend env vars, and the live-send kill switch (`SENDSTACK_LIVE_SEND_ENABLED`, default `false`).
+
+The Python server above remains the dependency-free local reference build; it is not the Vercel deployment.
 
 ## What can be tested
 

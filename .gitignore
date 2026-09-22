@@ -64,3 +64,10 @@ Desktop.ini
 *.tmp
 *.temp
 .cache/
+
+# Node / Next.js
+node_modules/
+web/node_modules/
+web/.next/
+web/coverage/
+.pnpm-store/
