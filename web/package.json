@@ -13,8 +13,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@next/env": "15.2.5",
-    "next": "15.2.5",
+    "@next/env": "15.5.10",
+    "next": "15.5.10",
     "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
