@@ -30,6 +30,14 @@ function hasValidCsrf(request: Request, csrfToken: string): boolean {
   return request.headers.get("X-CSRF-Token") === csrfToken;
 }
 
+function renderTemplate(value: string, contact: { email: string; first_name?: string; last_name?: string }, unsubscribeUrl: string): string {
+  return value
+    .replaceAll("{{first_name}}", contact.first_name ?? "")
+    .replaceAll("{{last_name}}", contact.last_name ?? "")
+    .replaceAll("{{email}}", contact.email)
+    .replaceAll("{{unsubscribe_url}}", unsubscribeUrl);
+}
+
 async function currentSession(request: Request) {
   const token = cookieValue(request, "sendstack_session");
   if (!token) return null;
@@ -320,12 +328,13 @@ export async function handleApi(request: Request, path: string[]) {
       const messageId = `msg_${randomBytes(16).toString("hex")}`;
       const unsubscribeToken = randomBytes(24).toString("base64url");
       const unsubscribeUrl = `${process.env.SENDSTACK_PUBLIC_URL ?? "http://localhost:3000"}/u/${unsubscribeToken}`;
-      const htmlBody = campaign.html_body.replaceAll("{{unsubscribe_url}}", unsubscribeUrl);
-      const textBody = campaign.text_body.replaceAll("{{unsubscribe_url}}", unsubscribeUrl);
+      const htmlBody = renderTemplate(campaign.html_body, contact, unsubscribeUrl);
+      const textBody = renderTemplate(campaign.text_body, contact, unsubscribeUrl);
+      const subject = renderTemplate(campaign.subject, contact, unsubscribeUrl);
       const providerEmail = config.deliveryMode === "resend"
         ? await sendResendEmail({
             to: contact.email,
-            subject: campaign.subject,
+        subject,
             html: htmlBody,
             text: textBody,
             fromName: campaign.from_name,
@@ -340,7 +349,7 @@ export async function handleApi(request: Request, path: string[]) {
       await query(
         `INSERT INTO messages (id, campaign_id, recipient_id, contact_id, to_email, subject, from_email, html_body, text_body, status, unsubscribe_token, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'captured', $10, NOW())`,
-        [messageId, campaign.id, recipientId, contact.id, contact.email, campaign.subject, campaign.from_email, htmlBody, textBody, unsubscribeToken],
+        [messageId, campaign.id, recipientId, contact.id, contact.email, subject, campaign.from_email, htmlBody, textBody, unsubscribeToken],
       );
       if (providerEmail) {
         await query(`UPDATE messages SET status = 'submitted', provider_id = $1 WHERE id = $2`, [providerEmail.id, messageId]);
