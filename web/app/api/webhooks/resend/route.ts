@@ -36,6 +36,15 @@ export async function POST(request: Request) {
      VALUES ($1, 'resend', $2, $3, NOW(), NOW()) ON CONFLICT (id) DO NOTHING`,
     [eventId, event.type ?? "unknown", body],
   );
+  await query(
+    `INSERT INTO audit_events (actor_user_id, action, entity_type, entity_id, detail_json, created_at)
+     VALUES (NULL, $1, 'provider_event', $2, $3, NOW())`,
+    [
+      `resend_${event.type ?? "unknown"}`,
+      providerId ?? eventId,
+      JSON.stringify({ provider: "resend", event_id: eventId, recipient_count: recipients.length }),
+    ],
+  );
 
   if (providerId && event.type === "email.delivered") {
     await query(`UPDATE messages SET status = 'delivered', provider_id = $1, delivered_at = NOW() WHERE provider_id = $1`, [providerId]);

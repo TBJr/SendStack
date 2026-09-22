@@ -132,12 +132,23 @@ function userPayload(user: { id: string; email: string; name: string; role: stri
   };
 }
 
-async function recordAudit(actorUserId: string, action: string, entityType: string, entityId: string | null, detail: Record<string, unknown> = {}) {
+function requestAuditContext(request: Request): Record<string, unknown> {
+  return {
+    ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown",
+    user_agent: request.headers.get("user-agent") ?? "unknown",
+  };
+}
+
+async function recordAudit(actorUserId: string | null, action: string, entityType: string, entityId: string | null, detail: Record<string, unknown> = {}) {
   await query(
     `INSERT INTO audit_events (actor_user_id, action, entity_type, entity_id, detail_json, created_at)
      VALUES ($1, $2, $3, $4, $5, NOW())`,
     [actorUserId, action, entityType, entityId, JSON.stringify(detail)],
   );
+}
+
+async function recordRequestAudit(request: Request, actorUserId: string | null, action: string, entityType: string, entityId: string | null, detail: Record<string, unknown> = {}) {
+  return recordAudit(actorUserId, action, entityType, entityId, { ...requestAuditContext(request), ...detail });
 }
 
 async function summaryResponse() {
@@ -225,6 +236,7 @@ export async function handleApi(request: Request, path: string[]) {
     );
     const user = result.rows[0];
     if (!user || !body.password || !verifyPassword(body.password, user.password_hash)) {
+      await recordRequestAudit(request, user?.id ?? null, "login_failed", "authentication", user?.id ?? null, { email: normalizeEmail(body.email ?? "") });
       return json(401, { error: "Invalid email or password." });
     }
     const token = randomBytes(32).toString("base64url");
@@ -237,6 +249,7 @@ export async function handleApi(request: Request, path: string[]) {
     );
     const response = json(200, sessionPayload({ ...user, user_id: user.id, token_hash: tokenHash(token), csrf_token: csrfToken, token } as never));
     response.headers.set("Set-Cookie", cookieHeader(token, hours * 3600));
+    await recordRequestAudit(request, user.id, "login_succeeded", "session", tokenHash(token), { role: user.role });
     return response;
   }
   if (request.method === "GET" && route === "/session") {
@@ -275,7 +288,7 @@ export async function handleApi(request: Request, path: string[]) {
     if (existing.rows[0]) return json(409, { error: "A list with that name already exists." });
     const id = `lst_${randomBytes(16).toString("hex")}`;
     await query(`INSERT INTO lists (id, name, description, created_at) VALUES ($1, $2, $3, NOW())`, [id, name, description]);
-    await recordAudit(auth.session.user_id, "list_created", "list", id, { name });
+    await recordRequestAudit(request, auth.session.user_id, "list_created", "list", id, { name });
     return json(201, { list: { id, name, description, contact_count: 0 } });
   }
   if (request.method === "GET" && route === "/users") {
@@ -302,6 +315,10 @@ export async function handleApi(request: Request, path: string[]) {
   if (request.method === "GET" && route === "/audit") {
     const auth = await requirePermission(request, "audit.view");
     if (auth.response) return auth.response;
+    const params = new URL(request.url).searchParams;
+    const actionFilter = params.get("action")?.trim() ?? "";
+    const entityFilter = params.get("entity_type")?.trim() ?? "";
+    const limit = Math.min(Math.max(Number(params.get("limit") ?? 500) || 500, 1), 1000);
     const events = await query<{
       id: string; actor_user_id: string | null; actor_name: string | null; action: string;
       entity_type: string; entity_id: string | null; detail_json: string; created_at: string;
@@ -309,7 +326,9 @@ export async function handleApi(request: Request, path: string[]) {
       `SELECT a.id, a.actor_user_id, u.name AS actor_name, a.action, a.entity_type,
               a.entity_id, a.detail_json, a.created_at
          FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id
-        ORDER BY a.created_at DESC LIMIT 500`,
+        WHERE ($1 = '' OR a.action = $1) AND ($2 = '' OR a.entity_type = $2)
+        ORDER BY a.created_at DESC LIMIT $3`,
+      [actionFilter, entityFilter, limit],
     );
     return json(200, {
       events: events.rows.map((event) => ({
@@ -327,7 +346,7 @@ export async function handleApi(request: Request, path: string[]) {
     if (!validEmail(email)) return json(400, { error: "Enter a valid email address." });
     if (body.reason !== "manual") return json(400, { error: "Manual suppressions must use the manual reason." });
     await applySuppression(email, "manual", "application");
-    await recordAudit(auth.session.user_id, "suppression_created", "suppression", email, { reason: "manual" });
+    await recordRequestAudit(request, auth.session.user_id, "suppression_created", "suppression", email, { reason: "manual" });
     return json(201, { suppression: { email, reason: "manual", source: "application" } });
   }
   if (request.method === "POST" && route === "/users") {
@@ -349,7 +368,7 @@ export async function handleApi(request: Request, path: string[]) {
        VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, NOW(), NOW())`,
       [id, email, name, role, hashPassword(body.password)],
     );
-    await recordAudit(auth.session.user_id, "user_created", "user", id, { email, role });
+    await recordRequestAudit(request, auth.session.user_id, "user_created", "user", id, { email, role });
     return json(201, { user: userPayload({ id, email, name, role, active: true, must_change_password: true, created_at: new Date().toISOString() }, auth.session.user_id) });
   }
   const userMatch = route.match(/^\/users\/([^/]+)$/);
@@ -370,7 +389,7 @@ export async function handleApi(request: Request, path: string[]) {
     );
     if (!updated.rows[0]) return json(404, { error: "User not found." });
     await query(`DELETE FROM sessions WHERE user_id = $1`, [userMatch[1]]);
-    await recordAudit(auth.session.user_id, "user_access_updated", "user", userMatch[1], { email, role: body.role, active: body.active !== false });
+    await recordRequestAudit(request, auth.session.user_id, "user_access_updated", "user", userMatch[1], { email, role: body.role, active: body.active !== false });
     return json(200, { user: userPayload(updated.rows[0] as never, auth.session.user_id) });
   }
   const resetMatch = route.match(/^\/users\/([^/]+)\/reset-password$/);
@@ -383,7 +402,7 @@ export async function handleApi(request: Request, path: string[]) {
     const updated = await query(`UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = NOW() WHERE id = $2 RETURNING id`, [hashPassword(body.password), resetMatch[1]]);
     if (!updated.rows[0]) return json(404, { error: "User not found." });
     await query(`DELETE FROM sessions WHERE user_id = $1`, [resetMatch[1]]);
-    await recordAudit(auth.session.user_id, "user_password_reset", "user", resetMatch[1]);
+    await recordRequestAudit(request, auth.session.user_id, "user_password_reset", "user", resetMatch[1]);
     return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/contacts") {
@@ -471,6 +490,7 @@ export async function handleApi(request: Request, path: string[]) {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft', $11, NOW(), NOW())`,
       [id, name, subject, fromName, fromEmail, contentMode, contentJson, body.html_body ?? "", body.text_body ?? "", listId, auth.session.user_id],
     );
+    await recordRequestAudit(request, auth.session.user_id, "campaign_created", "campaign", id, { name, list_id: listId, content_mode: contentMode });
     return json(201, { campaign: { id, name, subject, status: "draft", list_id: listId } });
   }
   const campaignMatch = route.match(/^\/campaigns\/([^/]+)$/);
@@ -508,6 +528,7 @@ export async function handleApi(request: Request, path: string[]) {
     if (campaignAction[2] === "pause" || campaignAction[2] === "resume") {
       const status = campaignAction[2] === "pause" ? "paused" : "sending";
       await query(`UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2`, [status, campaign.id]);
+      await recordRequestAudit(request, auth.session.user_id, `campaign_${campaignAction[2]}d`, "campaign", campaign.id, { status });
       return json(200, { ok: true, status });
     }
     for (const contact of contacts) {
@@ -546,6 +567,7 @@ export async function handleApi(request: Request, path: string[]) {
       }
     }
     await query(`UPDATE campaigns SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, [campaign.id]);
+    await recordRequestAudit(request, auth.session.user_id, campaignAction[2] === "test-send" ? "campaign_test_sent" : "campaign_launched", "campaign", campaign.id, { recipients: contacts.length, delivery_mode: config.deliveryMode });
     return json(200, { queued: contacts.length, sent: contacts.length });
   }
   if (request.method === "GET" && route === "/messages") {
@@ -596,6 +618,7 @@ export async function handleApi(request: Request, path: string[]) {
       `INSERT INTO list_contacts (list_id, contact_id, added_at) VALUES ($1, $2, NOW())`,
       [body.list_id, id],
     );
+    await recordRequestAudit(request, auth.session.user_id, "contact_created", "contact", id, { email, list_id: body.list_id, consent_source: consentSource });
     return json(201, { contact: { id, email, first_name: firstName, last_name: lastName } });
   }
   if (request.method === "POST" && route === "/auth/change-password") {
@@ -622,11 +645,14 @@ export async function handleApi(request: Request, path: string[]) {
       `UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = NOW() WHERE id = $2`,
       [hashPassword(body.new_password), session.user_id],
     );
+    await recordRequestAudit(request, session.user_id, "password_changed", "user", session.user_id);
     return json(200, sessionPayload({ ...session, must_change_password: false }));
   }
   if (request.method === "POST" && route === "/auth/logout") {
     const token = cookieValue(request, "sendstack_session");
+    const session = await currentSession(request);
     if (token) await query(`DELETE FROM sessions WHERE token_hash = $1`, [tokenHash(token)]);
+    if (session) await recordRequestAudit(request, session.user_id, "logout", "session", token ? tokenHash(token) : null);
     const response = json(200, { ok: true });
     response.headers.set("Set-Cookie", cookieHeader("", 0));
     return response;
