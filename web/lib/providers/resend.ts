@@ -7,6 +7,7 @@ export type ResendEmailInput = {
   text: string;
   fromName: string;
   fromEmail: string;
+  unsubscribeUrl?: string;
 };
 
 export async function sendResendEmail(input: ResendEmailInput): Promise<{ id: string }> {
@@ -26,6 +27,10 @@ export async function sendResendEmail(input: ResendEmailInput): Promise<{ id: st
       subject: input.subject,
       html: input.html,
       text: input.text,
+      headers: input.unsubscribeUrl ? {
+        "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      } : undefined,
     }),
   });
   const payload = await response.json().catch(() => ({})) as { id?: string; message?: string; name?: string };

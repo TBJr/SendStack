@@ -499,6 +499,7 @@ export async function handleApi(request: Request, path: string[]) {
             text: textBody,
             fromName: campaign.from_name,
             fromEmail: campaign.from_email,
+            unsubscribeUrl,
           })
         : null;
       if (contact.id) {
