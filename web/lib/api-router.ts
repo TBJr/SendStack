@@ -38,7 +38,7 @@ const PERMISSION_DEFINITIONS = [
 ].map(([id, label, description]) => ({ id, label, description }));
 
 function permissionsForRole(role: string): string[] {
-  return role === "admin" ? ADMIN_PERMISSIONS : [];
+  return ROLE_DEFINITIONS.find((definition) => definition.id === role)?.permissions ?? [];
 }
 
 function tokenHash(token: string): string {
@@ -257,17 +257,17 @@ export async function handleApi(request: Request, path: string[]) {
     return session ? json(200, sessionPayload(session)) : json(401, { error: "Not signed in." });
   }
   if (request.method === "GET" && route === "/summary") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "overview.view");
     if (auth.response) return auth.response;
     return summaryResponse();
   }
   if (request.method === "GET" && route === "/production-readiness") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "sending.view");
     if (auth.response) return auth.response;
     return readinessResponse();
   }
   if (request.method === "GET" && route === "/lists") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "lists.view");
     if (auth.response) return auth.response;
     const lists = await query(
       `SELECT l.id, l.name, l.description, l.created_at, COUNT(lc.contact_id)::int AS contact_count
@@ -317,7 +317,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/users") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "users.view");
     if (auth.response) return auth.response;
     const users = await query<{
       id: string; email: string; name: string; role: string; active: boolean;
@@ -335,7 +335,7 @@ export async function handleApi(request: Request, path: string[]) {
     });
   }
   if (request.method === "GET" && route === "/suppressions") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "suppressions.view");
     if (auth.response) return auth.response;
     const suppressions = await query(
       `SELECT email, reason, source, created_at FROM suppressions ORDER BY created_at DESC LIMIT 500`,
@@ -343,7 +343,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { suppressions: suppressions.rows });
   }
   if (request.method === "GET" && route === "/audit") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "audit.view");
     if (auth.response) return auth.response;
     const params = new URL(request.url).searchParams;
     const actionFilter = params.get("action")?.trim() ?? "";
@@ -458,7 +458,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/contacts") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "contacts.view");
     if (auth.response) return auth.response;
     const search = new URL(request.url).searchParams.get("q")?.trim() ?? "";
     const contacts = await query(
@@ -501,7 +501,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { ok: true });
   }
   if (request.method === "GET" && route === "/campaigns") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "campaigns.view");
     if (auth.response) return auth.response;
     const campaigns = await query(
       `SELECT c.id, c.name, c.subject, c.from_name, c.from_email, c.content_mode,
@@ -574,7 +574,7 @@ export async function handleApi(request: Request, path: string[]) {
   }
   const campaignMatch = route.match(/^\/campaigns\/([^/]+)$/);
   if (request.method === "GET" && campaignMatch) {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "campaigns.view");
     if (auth.response) return auth.response;
     const campaign = await campaignById(campaignMatch[1]);
     if (!campaign) return json(404, { error: "Campaign not found." });
@@ -680,7 +680,7 @@ export async function handleApi(request: Request, path: string[]) {
     return json(200, { queued: contacts.length, sent: contacts.length });
   }
   if (request.method === "GET" && route === "/messages") {
-    const auth = await requireAdmin(request);
+    const auth = await requirePermission(request, "deliveries.view");
     if (auth.response) return auth.response;
     const messages = await query(
       `SELECT m.id, m.to_email, m.subject, m.from_email, m.status, m.created_at, m.unsubscribe_token, c.name AS campaign_name
