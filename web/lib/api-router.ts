@@ -122,13 +122,13 @@ async function requirePermission(request: Request, permission: string) {
     : { response: json(403, { error: "You do not have permission to access this resource." }) };
 }
 
-function userPayload(user: { id: string; email: string; name: string; role: string; active: boolean; must_change_password: boolean; created_at: string }, currentUserId: string) {
+function userPayload(user: { id: string; email: string; name: string; role: string; active: boolean; must_change_password: boolean; created_at: string; last_login_at?: string | null }, currentUserId: string) {
   const role = ROLE_DEFINITIONS.find((definition) => definition.id === user.role) ?? ROLE_DEFINITIONS[2];
   return {
     ...user,
     role_label: role.label,
     is_current_user: user.id === currentUserId,
-    last_login_at: null,
+    last_login_at: user.last_login_at ?? null,
   };
 }
 
@@ -321,8 +321,13 @@ export async function handleApi(request: Request, path: string[]) {
     if (auth.response) return auth.response;
     const users = await query<{
       id: string; email: string; name: string; role: string; active: boolean;
-      must_change_password: boolean; created_at: string;
-    }>(`SELECT id, email, name, role, active, must_change_password, created_at FROM users ORDER BY created_at`);
+      must_change_password: boolean; created_at: string; last_login_at: string | null;
+    }>(`SELECT u.id, u.email, u.name, u.role, u.active, u.must_change_password, u.created_at,
+               MAX(a.created_at) FILTER (WHERE a.action = 'login_succeeded') AS last_login_at
+          FROM users u
+          LEFT JOIN audit_events a ON a.actor_user_id = u.id
+         GROUP BY u.id
+         ORDER BY u.created_at`);
     return json(200, {
       users: users.rows.map((user) => userPayload(user, auth.session.user_id)),
       roles: ROLE_DEFINITIONS,
